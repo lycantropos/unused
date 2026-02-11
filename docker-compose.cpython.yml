@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  unused-cpython:
+    build:
+      context: .
+      args:
+        - IMAGE_NAME=${CPYTHON_IMAGE_NAME}
+        - IMAGE_VERSION=${CPYTHON_IMAGE_VERSION}
+    image: lycantropos/unused-cpython:0.0.0
+    volumes:
+      - ./pyproject.toml:/opt/unused/pyproject.toml
+      - ./README.md:/opt/unused/README.md
+      - ./setup.py:/opt/unused/setup.py
+      - ./tests:/opt/unused/tests
+      - ./unused:/opt/unused/unused
+    entrypoint: pytest
