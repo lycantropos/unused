@@ -174,7 +174,7 @@ def main() -> None:
 
     from unused._core.namespace_parser import (
         load_module_file_paths,
-        load_module_path_namespace,
+        resolve_module_path,
     )
     from unused._core.object_path import ModulePath
 
@@ -212,7 +212,7 @@ def main() -> None:
             stderr.flush()
             continue
         try:
-            load_module_path_namespace(
+            resolve_module_path(
                 module_path,
                 module_file_paths=module_file_paths,
                 module_paths=(),

@@ -147,10 +147,7 @@ class NamespaceParser(ast.NodeVisitor):
                 ) = candidate_local_path.components
                 namespace = self._namespace
                 for component in starting_candidate_local_path_components:
-                    try:
-                        namespace = namespace[component]
-                    except KeyError:
-                        raise
+                    namespace = namespace[component]
                 namespace[last_candidate_local_path_component] = (
                     self._resolve_node(
                         node.value,
@@ -294,10 +291,7 @@ class NamespaceParser(ast.NodeVisitor):
                 class_namespace.append_sub_namespace(metaclass_namespace)
         for base_node in reversed(node.bases):
             class_parser.visit(base_node)
-            try:
-                base_namespace = self._lookup_node(base_node)
-            except KeyError:
-                raise
+            base_namespace = self._lookup_node(base_node)
             if base_namespace is None:
                 continue
             class_namespace.append_sub_namespace(base_namespace)
@@ -443,7 +437,7 @@ class NamespaceParser(ast.NodeVisitor):
         for alias in node.names:
             if (module_alias := alias.asname) is not None:
                 self._namespace[module_alias] = module_namespace = (
-                    _resolve_module_path(
+                    resolve_module_path(
                         ModulePath.from_module_name(alias.name),
                         module_file_paths=self._module_file_paths,
                         module_paths=self._module_paths,
@@ -457,7 +451,7 @@ class NamespaceParser(ast.NodeVisitor):
                 module_path = ModulePath.from_module_name(alias.name)
                 module_paths = list(self._module_paths)
                 for submodule_path in module_path.submodule_paths():
-                    submodule_namespace = _resolve_module_path(
+                    submodule_namespace = resolve_module_path(
                         submodule_path,
                         module_file_paths=self._module_file_paths,
                         module_paths=module_paths,
@@ -490,15 +484,24 @@ class NamespaceParser(ast.NodeVisitor):
                     module_name
                 ).components
             top_submodule_path = ModulePath(*components)
+            top_submodule_namespace = resolve_module_path(
+                top_submodule_path,
+                module_file_paths=self._module_file_paths,
+                module_paths=self._module_paths,
+            )
+            if is_package and node.level == 1:
+                self._namespace[top_submodule_path.components[-1]] = (
+                    top_submodule_namespace
+                )
         else:
             assert node.module is not None, ast.unparse(node)
             assert node.level == 0, ast.unparse(node)
             top_submodule_path = ModulePath.from_module_name(node.module)
-        module_namespace = _resolve_module_path(
-            top_submodule_path,
-            module_file_paths=self._module_file_paths,
-            module_paths=self._module_paths,
-        )
+            top_submodule_namespace = resolve_module_path(
+                top_submodule_path,
+                module_file_paths=self._module_file_paths,
+                module_paths=self._module_paths,
+            )
         for alias in node.names:
             if alias.name == '*':
                 assert self._namespace.kind is ObjectKind.MODULE, (
@@ -507,35 +510,37 @@ class NamespaceParser(ast.NodeVisitor):
                     f'with path {self._namespace.module_path!r} '
                     f'{self._namespace.local_path!r}'
                 )
-                self._namespace.append_sub_namespace(module_namespace)
+                self._namespace.append_sub_namespace(top_submodule_namespace)
                 continue
             value: Any | Missing
             try:
-                object_namespace = module_namespace[alias.name]
+                object_namespace = top_submodule_namespace[alias.name]
             except KeyError:
                 if (
-                    submodule_path := module_namespace.module_path.join(
+                    submodule_path := top_submodule_namespace.module_path.join(
                         alias.name
                     )
                 ) in self._module_file_paths:
-                    object_namespace = _resolve_module_path(
+                    object_namespace = resolve_module_path(
                         submodule_path,
                         module_file_paths=self._module_file_paths,
                         module_paths=self._module_paths,
                     )
                     value = object_namespace.as_object()
                 else:
-                    object_namespace = module_namespace[alias.name] = (
+                    object_namespace = top_submodule_namespace[alias.name] = (
                         Namespace(
                             ObjectKind.UNKNOWN,
-                            module_namespace.module_path,
+                            top_submodule_namespace.module_path,
                             LocalObjectPath(alias.name),
                         )
                     )
                     value = MISSING
             else:
                 try:
-                    value = module_namespace.get_object_by_name(alias.name)
+                    value = top_submodule_namespace.get_object_by_name(
+                        alias.name
+                    )
                 except KeyError:
                     value = MISSING
             object_alias_or_name = alias.asname or alias.name
@@ -1172,33 +1177,6 @@ class NamespaceParser(ast.NodeVisitor):
         return self._resolve_assignment_target(node.value)
 
 
-def _resolve_module_path(
-    module_path: ModulePath,
-    /,
-    *,
-    module_file_paths: Mapping[ModulePath, Path | None],
-    module_paths: Sequence[ModulePath],
-) -> Namespace:
-    root_component, *rest_components = module_path.components
-    root_module_path = ModulePath(root_component)
-    result = load_module_path_namespace(
-        root_module_path,
-        module_file_paths=module_file_paths,
-        module_paths=module_paths,
-    )
-    for component in rest_components:
-        try:
-            result = result[component]
-        except KeyError:
-            submodule_path = result.module_path.join(component)
-            result = load_module_path_namespace(
-                submodule_path,
-                module_file_paths=module_file_paths,
-                module_paths=module_paths,
-            )
-    return result
-
-
 def load_module_file_paths(
     *source_directories: Path,
 ) -> Mapping[ModulePath, Path | None]:
@@ -1281,6 +1259,33 @@ def load_module_file_paths(
                         except ValueError:
                             continue
                         result[submodule_path] = submodule_file_path
+    return result
+
+
+def resolve_module_path(
+    module_path: ModulePath,
+    /,
+    *,
+    module_file_paths: Mapping[ModulePath, Path | None],
+    module_paths: Sequence[ModulePath],
+) -> Namespace:
+    root_component, *rest_components = module_path.components
+    root_module_path = ModulePath(root_component)
+    result = _load_module_path_namespace(
+        root_module_path,
+        module_file_paths=module_file_paths,
+        module_paths=module_paths,
+    )
+    for component in rest_components:
+        try:
+            result = result[component]
+        except KeyError:
+            submodule_path = result.module_path.join(component)
+            result = _load_module_path_namespace(
+                submodule_path,
+                module_file_paths=module_file_paths,
+                module_paths=module_paths,
+            )
     return result
 
 
@@ -1519,7 +1524,7 @@ def _collect_dependencies(
             )
 
 
-def parse_modules(*modules: types.ModuleType) -> None:
+def _parse_modules(*modules: types.ModuleType) -> None:
     dependency_graph: dict[DependencyNode, set[DependencyNode]] = {}
     sub_object_graph: dict[
         tuple[ModulePath, LocalObjectPath],
@@ -1652,7 +1657,7 @@ assert (
     )
     is types.FunctionType  # type: ignore[comparison-overlap]
 )
-parse_modules(builtins, sys, types)
+_parse_modules(builtins, sys, types)
 TYPES_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[TYPES_MODULE_PATH]
 BUILTINS_MODULE_NAMESPACE.set_object_by_path(
     LocalObjectPath.from_object_name(builtins.getattr.__qualname__),
@@ -1679,7 +1684,7 @@ SUPPRESS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 )
 
 
-def load_module_path_namespace(
+def _load_module_path_namespace(
     module_path: ModulePath,
     /,
     *,
@@ -1702,13 +1707,16 @@ def load_module_path_namespace(
                 ObjectKind.EXTENSION_MODULE, module_path, LocalObjectPath()
             )
         module_source_text = module_file_path.read_text(encoding='utf-8')
+        module_node = ast.parse(module_source_text)
         assert module_path not in MODULE_NAMESPACES
-        module = types.ModuleType(module_path.to_module_name())
+        module = types.ModuleType(
+            module_path.to_module_name(), ast.get_docstring(module_node)
+        )
         module.__file__ = str(module_file_path)
         if module_file_path.name.startswith('__init__.'):
             module.__package__ = module_path.to_module_name()
             module.__path__ = [str(module_file_path.parent)]
-        parse_modules(module)
+        _parse_modules(module)
         result = MODULE_NAMESPACES[module_path]
         namespace_parser = NamespaceParser(
             result,
@@ -1716,5 +1724,9 @@ def load_module_path_namespace(
             module_file_paths=module_file_paths,
             module_paths=(*module_paths, module_path),
         )
-        namespace_parser.visit(ast.parse(module_source_text))
+        try:
+            namespace_parser.visit(module_node)
+        except ModuleNotFoundError:
+            del MODULE_NAMESPACES[module_path]
+            raise
     return result
