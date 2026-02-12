@@ -4,12 +4,12 @@ import functools
 import operator
 from collections.abc import Iterator, MutableMapping
 from enum import Enum
-from itertools import pairwise
 from typing import Any
 
 from typing_extensions import Self
 
 from .attribute_mapping import AttributeMapping
+from .mapping_chain import MappingChain
 from .missing import MISSING
 from .object_path import LocalObjectPath, ModulePath
 
@@ -43,15 +43,22 @@ class Namespace(MutableMapping[str, 'Namespace']):
     def local_path(self, /) -> LocalObjectPath:
         return self._local_path
 
-    @property
-    def objects(self, /) -> dict[str, Any]:
-        return self._objects
-
     def append_sub_namespace(self, sub_namespace: Self, /) -> None:
         assert isinstance(sub_namespace, Namespace), self
         assert sub_namespace is not self, self
         assert sub_namespace not in self._sub_namespaces, self
         self._sub_namespaces.append(sub_namespace)
+
+    def as_object(self, /) -> AttributeMapping:
+        return AttributeMapping(
+            MappingChain(
+                self._objects,
+                *[
+                    sub_namespace._objects  # noqa: SLF001
+                    for sub_namespace in self._sub_namespaces
+                ],
+            )
+        )
 
     def get_namespace_by_path(self, local_path: LocalObjectPath, /) -> Self:
         return functools.reduce(
@@ -60,35 +67,46 @@ class Namespace(MutableMapping[str, 'Namespace']):
             self,
         )
 
+    def get_object_by_name(self, name: str, /) -> Any:
+        assert isinstance(name, str), name
+        return self._objects[name]
+
     def set_namespace_by_path(
         self, local_path: LocalObjectPath, namespace: Self, /
     ) -> None:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        assert isinstance(namespace, type(self)), namespace
         parent_namespace = functools.reduce(
             operator.getitem,  # type: ignore[arg-type]
             local_path.components[:-1],
             self,
         )
-        if (
-            old_namespace := parent_namespace.get(local_path.components[-1])
-        ) is not None:
+        name = local_path.components[-1]
+        if (old_namespace := parent_namespace.get(name)) is not None:
             assert old_namespace is namespace
             return
-        try:
-            parent_namespace[local_path.components[-1]] = namespace
-        except KeyError:
-            raise
+        parent_namespace[name] = namespace
+
+    def set_object_by_name(self, name: str, value: Any, /) -> None:
+        assert isinstance(name, str), name
+        assert value is not MISSING
+        assert name in self._children
+        self._objects[name] = value
 
     def set_object_by_path(
         self, local_path: LocalObjectPath, value: Any, /
     ) -> None:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        assert isinstance(self.get_namespace_by_path(local_path), Namespace)
         assert value is not MISSING
         namespace = self
-        for component, next_component in pairwise(local_path.components):
+        for component in local_path.components[:-1]:
+            if component not in namespace._objects:  # noqa: SLF001
+                namespace._objects[component] = namespace[  # noqa: SLF001
+                    component
+                ].as_object()
             namespace = namespace[component]
-            namespace.objects[component] = AttributeMapping(
-                namespace[next_component].objects
-            )
-        namespace.objects[local_path.components[-1]] = value
+        namespace._objects[local_path.components[-1]] = value  # noqa: SLF001
 
     _children: dict[str, Self]
     _kind: ObjectKind
@@ -154,7 +172,6 @@ class Namespace(MutableMapping[str, 'Namespace']):
         local_path: LocalObjectPath,
         /,
         *sub_namespaces: Self,
-        objects: dict[str, Any] | None = None,
     ) -> None:
         (
             self._children,
@@ -163,14 +180,7 @@ class Namespace(MutableMapping[str, 'Namespace']):
             self._local_path,
             self._sub_namespaces,
             self._objects,
-        ) = (
-            {},
-            kind,
-            module_path,
-            local_path,
-            list(sub_namespaces),
-            objects or {},
-        )
+        ) = {}, kind, module_path, local_path, list(sub_namespaces), {}
 
     def __iter__(self, /) -> Iterator[str]:
         return iter(self._children)

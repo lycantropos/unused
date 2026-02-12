@@ -1,11 +1,17 @@
 import argparse
+import shlex
+import subprocess
 import sys
 import traceback
-from enum import Enum, unique
+from abc import ABC, abstractmethod
 from importlib.machinery import EXTENSION_SUFFIXES, SOURCE_SUFFIXES
 from itertools import chain
 from pathlib import Path
-from typing import Final
+from typing import ClassVar, Final
+
+from typing_extensions import Self, override
+
+from unused._core.valuespace import BaseValuespace
 
 if sys.version_info < (3, 11):
     from exceptiongroup import ExceptionGroup
@@ -13,28 +19,131 @@ if sys.version_info < (3, 11):
 import unused
 
 
-@unique
-class ArgumentName(str, Enum):
-    ROOT_PATH = 'root_path'
-    PATHS = 'paths'
+class Parameter(ABC):
+    @property
+    @abstractmethod
+    def attribute_name(self, /) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def name(self, /) -> str:
+        raise NotImplementedError
+
+
+class Argument(Parameter):
+    @property
+    @override
+    def attribute_name(self, /) -> str:
+        return self._value
+
+    @property
+    @override
+    def name(self, /) -> str:
+        return self._value
+
+    _value: str
+    __slots__ = ('_value',)
+
+    def __new__(cls, value: str, /) -> Self:
+        assert isinstance(value, str), value
+        assert value.isidentifier(), value
+        self = super().__new__(cls)
+        self._value = value
+        return self
+
+
+class Option(Parameter):
+    @property
+    @override
+    def attribute_name(self, /) -> str:
+        return self._value
+
+    @property
+    @override
+    def name(self, /) -> str:
+        return '--' + self._value.replace('_', '-')
+
+    _value: str
+    __slots__ = ('_value',)
+
+    def __new__(cls, value: str, /) -> Self:
+        assert isinstance(value, str), value
+        assert value.isidentifier(), value
+        self = super().__new__(cls)
+        self._value = value
+        return self
+
+
+class ArgumentValuespace(BaseValuespace[Argument]):
+    @classmethod
+    @override
+    def value_cls(cls, /) -> type[Argument]:
+        return Argument
+
+    MODULE_PATHS: ClassVar = Argument('module_paths')
+
+
+class OptionValuespace(BaseValuespace[Option]):
+    @classmethod
+    @override
+    def value_cls(cls, /) -> type[Option]:
+        return Option
+
+    PYTHON_PATH: ClassVar = Option('python_path')
+    ROOT_PATH: ClassVar = Option('root_path')
+    VERSION: ClassVar = Option('version')
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(unused.__name__)
-    parser.add_argument('--' + ArgumentName.ROOT_PATH, default='.')
     parser.add_argument(
-        ArgumentName.PATHS, metavar='PATH', nargs=argparse.ZERO_OR_MORE
+        OptionValuespace.VERSION.name,
+        action='version',
+        version=unused.__version__,
+    )
+    parser.add_argument(OptionValuespace.ROOT_PATH.name, default='.')
+    parser.add_argument(
+        OptionValuespace.PYTHON_PATH.name,
+        default=None,
+        help='path to `Python` executable.',
+    )
+    parser.add_argument(
+        ArgumentValuespace.MODULE_PATHS.name,
+        help='`Python` module directory/file path to process.',
+        metavar='MODULE_PATH',
+        nargs=argparse.ZERO_OR_MORE,
     )
     args = parser.parse_args()
-    root_path = Path(getattr(args, ArgumentName.ROOT_PATH)).resolve(
-        strict=True
+    python_path_string = getattr(
+        args, OptionValuespace.PYTHON_PATH.attribute_name
     )
-    path_strings = getattr(args, ArgumentName.PATHS)
+    if python_path_string is not None:
+        python_path = Path(python_path_string).resolve(strict=True)
+        if python_path != Path(sys.executable).resolve(strict=True):
+            raise SystemExit(
+                subprocess.call(
+                    [shlex.quote(python_path.as_posix()), *sys.orig_argv[1:]],
+                    stderr=sys.stderr,
+                    stdout=sys.stdout,
+                )
+            )
+    root_path = Path(
+        getattr(args, OptionValuespace.ROOT_PATH.attribute_name)
+    ).resolve(strict=True)
+    path_strings = getattr(
+        args, ArgumentValuespace.MODULE_PATHS.attribute_name
+    )
     if len(path_strings) == 0:
         paths = [root_path]
     else:
         unchecked_paths = dict.fromkeys(
-            Path(path_string) for path_string in path_strings
+            (
+                path
+                if (path := Path(path_string)).is_absolute()
+                else root_path.joinpath(path)
+            )
+            for path_string in path_strings
         ).keys()
         if (
             len(
@@ -63,8 +172,13 @@ def main() -> None:
             )
         paths = [path.resolve(strict=True) for path in unchecked_paths]
 
-    from ._core.namespace_parser import load_module_path_namespace
-    from ._core.object_path import ModulePath
+    from unused._core.namespace_parser import (
+        load_module_file_paths,
+        load_module_path_namespace,
+    )
+    from unused._core.object_path import ModulePath
+
+    module_file_paths = load_module_file_paths(root_path)
 
     stderr, stdout = sys.stderr, sys.stdout
     for module_file_path in chain.from_iterable(
@@ -98,9 +212,13 @@ def main() -> None:
             stderr.flush()
             continue
         try:
-            load_module_path_namespace(module_path, module_paths=())
+            load_module_path_namespace(
+                module_path,
+                module_file_paths=module_file_paths,
+                module_paths=(),
+            )
         except Exception as error:
-            stderr.write(f'Failed loading {module_path.to_module_name()!r}:\n')
+            stderr.write(f'Failed loading {module_path.to_module_name!r}:\n')
             stderr.writelines(
                 traceback.format_exception(
                     type(error), error, error.__traceback__
