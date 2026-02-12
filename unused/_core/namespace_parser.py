@@ -1353,12 +1353,13 @@ def _collect_dependencies(
                 value=MISSING if callable(field_value) else field_value,
             )
             if inspect.isfunction(field_value):
-                _collect_dependencies(
-                    dependency_graph,
-                    sub_object_graph,
-                    field_value,
-                    field_dependency_node,
-                )
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add((TYPES_MODULE_PATH, FUNCTION_TYPE_LOCAL_OBJECT_PATH))
             elif inspect.isclass(field_value):
                 prev_metacls = field_value
                 prev_metacls_alias_local_path = (
@@ -1601,6 +1602,9 @@ BUILTINS_MODULE_NAMESPACE: Final[Namespace] = Namespace(
     ObjectKind.MODULE, BUILTINS_MODULE_PATH, LocalObjectPath()
 )
 MODULE_NAMESPACES[BUILTINS_MODULE_PATH] = BUILTINS_MODULE_NAMESPACE
+TYPES_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
+    types.__name__
+)
 FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
     'FunctionType'
 )
@@ -1611,9 +1615,6 @@ assert (
     is types.FunctionType  # type: ignore[comparison-overlap]
 )
 _process_module(builtins, sys, types)
-TYPES_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
-    types.__name__
-)
 TYPES_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[TYPES_MODULE_PATH]
 BUILTINS_MODULE_NAMESPACE.set_object_by_path(
     LocalObjectPath.from_object_name(builtins.getattr.__qualname__),
@@ -1654,7 +1655,7 @@ def load_module_path_namespace(
             return Namespace(
                 ObjectKind.BUILTIN_MODULE, module_path, LocalObjectPath()
             )
-        if module_file_path.suffix in EXTENSION_SUFFIXES:
+        if module_file_path.name.endswith(tuple(EXTENSION_SUFFIXES)):
             return Namespace(
                 ObjectKind.EXTENSION_MODULE, module_path, LocalObjectPath()
             )
