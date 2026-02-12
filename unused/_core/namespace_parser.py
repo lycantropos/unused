@@ -1726,7 +1726,7 @@ def _load_module_path_namespace(
         )
         try:
             namespace_parser.visit(module_node)
-        except ModuleNotFoundError:
+        except Exception:
             del MODULE_NAMESPACES[module_path]
             raise
     return result
