@@ -218,7 +218,7 @@ def main() -> None:
                 module_paths=(),
             )
         except Exception as error:
-            stderr.write(f'Failed loading {module_path.to_module_name!r}:\n')
+            stderr.write(f'Failed loading {module_path.to_module_name()!r}:\n')
             stderr.writelines(
                 traceback.format_exception(
                     type(error), error, error.__traceback__
