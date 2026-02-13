@@ -27,10 +27,10 @@ from typing import Any, ClassVar, Final, TypeAlias
 from typing_extensions import override
 
 from .dependency_node import DependencyNode
-from .escaping import escape_value
 from .missing import MISSING, Missing
 from .namespace import Namespace, ObjectKind
 from .object_path import LocalObjectPath, ModulePath
+from .safety import is_safe
 
 EMPTY_MODULE_FILE_PATH: Final[Path] = Path(
     tempfile.NamedTemporaryFile(delete=False).name  # noqa: SIM115
@@ -210,9 +210,8 @@ class NamespaceParser(ast.NodeVisitor):
         callable_namespace = self._lookup_node(node.func)
         if callable_namespace is None:
             return
-        if (
-            callable_namespace.module_path == BUILTINS_MODULE_PATH
-            and callable_namespace.local_path
+        if callable_namespace.module_path == BUILTINS_MODULE_PATH and (
+            callable_namespace.local_path
             == LocalObjectPath.from_object_name(
                 builtins.globals.__qualname__
             ).join('update')
@@ -943,11 +942,15 @@ class NamespaceParser(ast.NodeVisitor):
         module_path: ModulePath,
         local_path: LocalObjectPath,
     ) -> Namespace:
-        return (
-            object_namespace[node.attr]
-            if (object_namespace := self._lookup_node(node.value)) is not None
-            else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-        )
+        try:
+            return (
+                object_namespace[node.attr]
+                if (object_namespace := self._lookup_node(node.value))
+                is not None
+                else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+            )
+        except KeyError:
+            raise
 
     @_resolve_node.register(ast.Call)
     def _(
@@ -1108,14 +1111,9 @@ class NamespaceParser(ast.NodeVisitor):
     @_lookup_node.register(ast.Attribute)
     def _(self, node: ast.Attribute, /) -> Namespace | None:
         object_namespace = self._lookup_node(node.value)
-        try:
-            return (
-                None
-                if object_namespace is None
-                else object_namespace[node.attr]
-            )
-        except KeyError:
-            raise
+        return (
+            None if object_namespace is None else object_namespace[node.attr]
+        )
 
     @_lookup_node.register(ast.Call)
     def _(self, node: ast.Call, /) -> Namespace | None:
@@ -1396,7 +1394,7 @@ def _collect_dependencies(
                 dependant_module_path=(
                     value_dependency_node.dependant_module_path
                 ),
-                value=escape_value(field_value),
+                value=field_value if is_safe(field_value) else MISSING,
             )
             if inspect.isfunction(field_value):
                 sub_object_graph.setdefault(
@@ -1587,7 +1585,9 @@ def _parse_modules(*modules: types.ModuleType) -> None:
                     ),
                 )
             else:
-                assert dependant_namespace.kind is dependency_node.object_kind
+                assert (
+                    dependant_namespace.kind is dependency_node.object_kind
+                ), (dependant_namespace, dependency_node)
                 del dependant_namespace
         else:
             dependency_module_namespace = MODULE_NAMESPACES[
