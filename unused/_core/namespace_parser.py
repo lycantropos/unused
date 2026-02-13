@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Final, TypeAlias
 from typing_extensions import override
 
 from .dependency_node import DependencyNode
+from .escaping import escape_value
 from .missing import MISSING, Missing
 from .namespace import Namespace, ObjectKind
 from .object_path import LocalObjectPath, ModulePath
@@ -1395,7 +1396,7 @@ def _collect_dependencies(
                 dependant_module_path=(
                     value_dependency_node.dependant_module_path
                 ),
-                value=MISSING if callable(field_value) else field_value,
+                value=escape_value(field_value),
             )
             if inspect.isfunction(field_value):
                 sub_object_graph.setdefault(
