@@ -24,8 +24,19 @@ class EscapedValue:
     def __eq__(self, other: Any, /) -> Any:
         return escape_value(_VALUES[self._value_index] == other)
 
+    def __hash__(self, /) -> int:
+        result = hash(_VALUES[self._value_index])
+        assert isinstance(result, int), result
+        return result
+
     def __ge__(self, other: Any, /) -> Any:
         return escape_value(_VALUES[self._value_index] >= other)
+
+    def __getattr__(self, name: Any, /) -> Any:
+        return escape_value(getattr(_VALUES[self._value_index], name))
+
+    def __getitem__(self, item: Any, /) -> Any:
+        return escape_value(_VALUES[self._value_index][item])
 
     def __gt__(self, other: Any, /) -> Any:
         return escape_value(_VALUES[self._value_index] > other)
@@ -38,17 +49,6 @@ class EscapedValue:
 
     def __ne__(self, other: Any, /) -> Any:
         return escape_value(_VALUES[self._value_index] != other)
-
-    def __hash__(self, /) -> int:
-        result = hash(_VALUES[self._value_index])
-        assert isinstance(result, int), result
-        return result
-
-    def __getattr__(self, name: Any, /) -> Any:
-        return escape_value(getattr(_VALUES[self._value_index], name))
-
-    def __getitem__(self, item: Any, /) -> Any:
-        return escape_value(_VALUES[self._value_index][item])
 
     def __repr__(self, /) -> str:
         result = repr(_VALUES[self._value_index])
