@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import functools
-import operator
-from collections.abc import Iterator, MutableMapping
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from typing_extensions import Self
 
 from .attribute_mapping import AttributeMapping
 from .mapping_chain import MappingChain
-from .missing import MISSING
+from .missing import MISSING, Missing
 from .object_path import LocalObjectPath, ModulePath
 
 
@@ -30,7 +28,10 @@ class ObjectKind(str, Enum):
         return f'{type(self).__qualname__}.{self.name}'
 
 
-class Namespace(MutableMapping[str, 'Namespace']):
+_T = TypeVar('_T')
+
+
+class Namespace:
     @property
     def kind(self, /) -> ObjectKind:
         return self._kind
@@ -44,9 +45,19 @@ class Namespace(MutableMapping[str, 'Namespace']):
         return self._local_path
 
     def append_sub_namespace(self, sub_namespace: Self, /) -> None:
-        assert isinstance(sub_namespace, Namespace), self
-        assert sub_namespace is not self, self
-        assert sub_namespace not in self._sub_namespaces, self
+        assert sub_namespace.kind in (
+            ObjectKind.CLASS,
+            ObjectKind.INSTANCE,
+            ObjectKind.BUILTIN_MODULE,
+            ObjectKind.EXTENSION_MODULE,
+            ObjectKind.MODULE,
+            ObjectKind.ROUTINE,
+            ObjectKind.UNKNOWN,
+        ), (self, sub_namespace)
+        assert self.kind is not ObjectKind.UNKNOWN, (self, sub_namespace)
+        assert isinstance(sub_namespace, Namespace), (self, sub_namespace)
+        assert sub_namespace is not self, (self, sub_namespace)
+        assert sub_namespace not in self._sub_namespaces, (self, sub_namespace)
         self._sub_namespaces.append(sub_namespace)
 
     def as_object(self, /) -> AttributeMapping:
@@ -60,16 +71,60 @@ class Namespace(MutableMapping[str, 'Namespace']):
             )
         )
 
+    @overload
+    def get_namespace_by_name(
+        self, name: str, /, *, default: Missing = ...
+    ) -> Self: ...
+
+    @overload
+    def get_namespace_by_name(
+        self, name: str, /, *, default: _T
+    ) -> Self | _T: ...
+
+    def get_namespace_by_name(
+        self, name: str, /, *, default: Missing | _T = MISSING
+    ) -> Self | _T:
+        try:
+            return self._children[name]
+        except KeyError:
+            for sub_namespace in self._sub_namespaces:
+                try:
+                    return sub_namespace.get_namespace_by_name(name)
+                except KeyError:
+                    continue
+            if self.kind in (
+                ObjectKind.BUILTIN_MODULE,
+                ObjectKind.EXTENSION_MODULE,
+                ObjectKind.ROUTINE_CALL,
+                ObjectKind.INSTANCE,
+                ObjectKind.PROPERTY,
+                ObjectKind.UNKNOWN,
+            ):
+                assert name not in self._children
+                self._children[name] = result = type(self)(
+                    ObjectKind.UNKNOWN,
+                    self.module_path,
+                    self.local_path.join(name),
+                )
+                return result
+            if default is MISSING:
+                raise
+            return default
+
     def get_namespace_by_path(self, local_path: LocalObjectPath, /) -> Self:
+        assert isinstance(local_path, LocalObjectPath), local_path
         return functools.reduce(
-            operator.getitem,  # type: ignore[arg-type]
-            local_path.components,
-            self,
+            type(self).get_namespace_by_name, local_path.components, self
         )
 
     def get_object_by_name(self, name: str, /) -> Any:
         assert isinstance(name, str), name
         return self._objects[name]
+
+    def set_namespace_by_name(self, name: str, value: Self, /) -> None:
+        assert isinstance(name, str), (name, value)
+        assert isinstance(value, type(self)), (name, value)
+        self._children[name] = value
 
     def set_namespace_by_path(
         self, local_path: LocalObjectPath, namespace: Self, /
@@ -77,15 +132,11 @@ class Namespace(MutableMapping[str, 'Namespace']):
         assert isinstance(local_path, LocalObjectPath), local_path
         assert isinstance(namespace, type(self)), namespace
         parent_namespace = functools.reduce(
-            operator.getitem,  # type: ignore[arg-type]
-            local_path.components[:-1],
-            self,
+            type(self).get_namespace_by_name, local_path.components[:-1], self
         )
-        name = local_path.components[-1]
-        if (old_namespace := parent_namespace.get(name)) is not None:
-            assert old_namespace is namespace
-            return
-        parent_namespace[name] = namespace
+        parent_namespace.set_namespace_by_name(
+            local_path.components[-1], namespace
+        )
 
     def set_object_by_name(self, name: str, value: Any, /) -> None:
         assert isinstance(name, str), name
@@ -102,10 +153,10 @@ class Namespace(MutableMapping[str, 'Namespace']):
         namespace = self
         for component in local_path.components[:-1]:
             if component not in namespace._objects:  # noqa: SLF001
-                namespace._objects[component] = namespace[  # noqa: SLF001
-                    component
-                ].as_object()
-            namespace = namespace[component]
+                namespace._objects[component] = (  # noqa: SLF001
+                    namespace.get_namespace_by_name(component).as_object()
+                )
+            namespace = namespace.get_namespace_by_name(component)
         namespace._objects[local_path.components[-1]] = value  # noqa: SLF001
 
     _children: dict[str, Self]
@@ -141,30 +192,6 @@ class Namespace(MutableMapping[str, 'Namespace']):
             else NotImplemented
         )
 
-    def __getitem__(self, key: str, /) -> Self:
-        try:
-            return self._children[key]
-        except KeyError:
-            for sub_namespace in self._sub_namespaces:
-                try:
-                    return sub_namespace[key]
-                except KeyError:
-                    continue
-            if self.kind in (
-                ObjectKind.BUILTIN_MODULE,
-                ObjectKind.EXTENSION_MODULE,
-                ObjectKind.ROUTINE_CALL,
-                ObjectKind.INSTANCE,
-                ObjectKind.PROPERTY,
-                ObjectKind.UNKNOWN,
-            ):
-                return type(self)(
-                    ObjectKind.UNKNOWN,
-                    self.module_path,
-                    self.local_path.join(key),
-                )
-            raise
-
     def __init__(
         self,
         kind: ObjectKind,
@@ -182,12 +209,6 @@ class Namespace(MutableMapping[str, 'Namespace']):
             self._objects,
         ) = {}, kind, module_path, local_path, list(sub_namespaces), {}
 
-    def __iter__(self, /) -> Iterator[str]:
-        return iter(self._children)
-
-    def __len__(self, /) -> int:
-        return len(self._children)
-
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
@@ -196,8 +217,3 @@ class Namespace(MutableMapping[str, 'Namespace']):
             f'{", ".join(map(repr, self._sub_namespaces))}'
             ')'
         )
-
-    def __setitem__(self, key: str, value: Self, /) -> None:
-        assert isinstance(key, str), (key, value)
-        assert isinstance(value, type(self)), (key, value)
-        self._children[key] = value

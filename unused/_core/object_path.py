@@ -65,7 +65,7 @@ class ModulePath:
     def __eq__(self, other: Any, /) -> Any:
         return (
             self._components == other._components
-            if isinstance(other, ModulePath)
+            if isinstance(other, type(self))
             else NotImplemented
         )
 
@@ -112,7 +112,10 @@ class LocalObjectPath:
             )
             > 0
         ):
-            raise ValueError(invalid_components)
+            raise ValueError(
+                f'Following local object path components are invalid: '
+                f'{", ".join(map(repr, invalid_components))}.'
+            )
         self = super().__new__(cls)
         self._components = components
         return self
@@ -120,7 +123,7 @@ class LocalObjectPath:
     def __eq__(self, other: Any, /) -> Any:
         return (
             self._components == other._components
-            if isinstance(other, LocalObjectPath)
+            if isinstance(other, type(self))
             else NotImplemented
         )
 

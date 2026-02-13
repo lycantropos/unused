@@ -13,7 +13,13 @@ import pkgutil
 import sys
 import tempfile
 import types
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from importlib.machinery import (
     EXTENSION_SUFFIXES,
     ExtensionFileLoader,
@@ -24,7 +30,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Any, ClassVar, Final, TypeAlias
 
-from typing_extensions import override
+from typing_extensions import Self, override
 
 from .dependency_node import DependencyNode
 from .missing import MISSING, Missing
@@ -56,12 +62,70 @@ GLOBAL_ENUM_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
     if sys.version_info >= (3, 11)
     else LocalObjectPath()
 )
+GLOBALS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath.from_object_name(builtins.globals.__qualname__)
+)
 ENUM_META_CONVERT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(enum.EnumMeta._convert_.__qualname__)  # type: ignore[attr-defined]
+    LocalObjectPath.from_object_name(
+        enum.EnumMeta._convert_.__qualname__  # type: ignore[attr-defined]
+    )
 )
+
+
+class ResolvedAssignmentTargetSplitPath:
+    @property
+    def absolute(self, /) -> LocalObjectPath:
+        return self._absolute
+
+    @property
+    def relative(self, /) -> LocalObjectPath:
+        return self._relative
+
+    def join(self, /, *components: str) -> Self:
+        return type(self)(self._absolute, self._relative.join(*components))
+
+    def unsplit(self, /) -> LocalObjectPath:
+        return self._absolute.join(*self._relative.components)
+
+    _absolute: LocalObjectPath
+    _relative: LocalObjectPath
+
+    __slots__ = '_absolute', '_relative'
+
+    def __new__(
+        cls, absolute: LocalObjectPath, relative: LocalObjectPath
+    ) -> Self:
+        assert isinstance(absolute, LocalObjectPath), absolute
+        assert isinstance(relative, LocalObjectPath), relative
+        self = super().__new__(cls)
+        self._absolute, self._relative = absolute, relative
+        return self
+
+    def __repr__(self, /) -> str:
+        return (
+            f'{type(self).__qualname__}'
+            f'({self._absolute!r}, {self._relative!r})'
+        )
+
+
 _ResolvedAssignmentTarget: TypeAlias = (
-    Sequence['_ResolvedAssignmentTarget'] | LocalObjectPath | None
+    Sequence['_ResolvedAssignmentTarget']
+    | ResolvedAssignmentTargetSplitPath
+    | None
 )
+
+
+def _combine_resolved_assignment_target_with_value(
+    target: _ResolvedAssignmentTarget, value: Any, /
+) -> Iterable[tuple[ResolvedAssignmentTargetSplitPath | None, Any]]:
+    if target is None or isinstance(target, ResolvedAssignmentTargetSplitPath):
+        yield target, value
+        return
+    yield from chain.from_iterable(
+        map(_combine_resolved_assignment_target_with_value, target, value)
+    )
+
+
 _EVALUATION_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     AttributeError,
     IndexError,
@@ -97,16 +161,17 @@ class NamespaceParser(ast.NodeVisitor):
         target_name = target_node.id
         value_local_path = self._namespace.local_path.join(target_name)
         value_module_path = self._namespace.module_path
-        self._namespace[target_name] = (
+        self._namespace.set_namespace_by_name(
+            target_name,
             self._resolve_node(
                 value_node,
-                module_path=value_module_path,
                 local_path=value_local_path,
+                module_path=value_module_path,
             )
             if (value_node := node.value) is not None
             else Namespace(
                 ObjectKind.UNKNOWN, value_module_path, value_local_path
-            )
+            ),
         )
         if (value_node := node.value) is not None:
             try:
@@ -127,57 +192,56 @@ class NamespaceParser(ast.NodeVisitor):
             assert (
                 ctx := getattr(target_node, 'ctx', None)
             ) is None or isinstance(ctx, ast.Store), ast.unparse(node)
-            target_local_path = self._resolve_assignment_target(target_node)
-            if target_local_path is None:
-                continue
-            queue: list[_ResolvedAssignmentTarget] = (
-                [target_local_path]
-                if isinstance(target_local_path, LocalObjectPath)
-                else list(target_local_path)
-            )
-            while queue:
-                candidate_local_path = queue.pop()
-                if candidate_local_path is None:
-                    continue
-                if not isinstance(candidate_local_path, LocalObjectPath):
-                    queue.extend(candidate_local_path)
-                    continue
-                (
-                    *starting_candidate_local_path_components,
-                    last_candidate_local_path_component,
-                ) = candidate_local_path.components
-                namespace = self._namespace
-                for component in starting_candidate_local_path_components:
-                    namespace = namespace[component]
-                namespace[last_candidate_local_path_component] = (
-                    self._resolve_node(
-                        node.value,
-                        module_path=namespace.module_path,
-                        local_path=namespace.local_path.join(
-                            last_candidate_local_path_component
-                        ),
-                    )
-                    if isinstance(target_local_path, LocalObjectPath)
-                    else Namespace(
-                        ObjectKind.UNKNOWN,
-                        namespace.module_path,
-                        namespace.local_path.join(
-                            last_candidate_local_path_component
-                        ),
-                    )
+            resolved_target = self._resolve_assignment_target(target_node)
+            for (
+                target_object_split_path
+            ) in _flatten_resolved_assignment_target(resolved_target):
+                target_namespace = self._resolve_absolute_local_path(
+                    target_object_split_path.absolute
                 )
-                if value is not MISSING:
-                    self._namespace.set_object_by_path(
-                        candidate_local_path, value
+                target_namespace.set_namespace_by_path(
+                    target_object_split_path.relative,
+                    (
+                        self._resolve_node(
+                            node.value,
+                            local_path=target_object_split_path.unsplit(),
+                            module_path=target_namespace.module_path,
+                        )
+                        if isinstance(
+                            resolved_target, ResolvedAssignmentTargetSplitPath
+                        )
+                        else Namespace(
+                            ObjectKind.UNKNOWN,
+                            target_namespace.module_path,
+                            target_object_split_path.unsplit(),
+                        )
+                    ),
+                )
+            if value is not MISSING:
+                for (
+                    maybe_target_object_split_path,
+                    sub_value,
+                ) in _combine_resolved_assignment_target_with_value(
+                    resolved_target, value
+                ):
+                    if maybe_target_object_split_path is None:
+                        continue
+                    self._resolve_absolute_local_path(
+                        maybe_target_object_split_path.absolute
+                    ).set_object_by_path(
+                        maybe_target_object_split_path.relative, sub_value
                     )
 
     @override
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         function_name = node.name
-        self._namespace[function_name] = Namespace(
-            ObjectKind.ROUTINE,
-            self._namespace.module_path,
-            self._namespace.local_path.join(function_name),
+        self._namespace.set_namespace_by_name(
+            function_name,
+            Namespace(
+                ObjectKind.ROUTINE,
+                self._namespace.module_path,
+                self._namespace.local_path.join(function_name),
+            ),
         )
 
     @override
@@ -212,9 +276,7 @@ class NamespaceParser(ast.NodeVisitor):
             return
         if callable_namespace.module_path == BUILTINS_MODULE_PATH and (
             callable_namespace.local_path
-            == LocalObjectPath.from_object_name(
-                builtins.globals.__qualname__
-            ).join('update')
+            == GLOBALS_LOCAL_OBJECT_PATH.join('update')
         ):
             module_namespace = self._get_module_namespace()
             module_namespace.append_sub_namespace(
@@ -241,11 +303,16 @@ class NamespaceParser(ast.NodeVisitor):
                 enum_module_namespace.local_path
                 == self._namespace.local_path.join('__name__')
             ), ast.unparse(node)
-            self._namespace[enum_name] = Namespace(
-                ObjectKind.UNKNOWN,
-                self._namespace.module_path,
-                self._namespace.local_path.join(enum_name),
-                BUILTINS_MODULE_NAMESPACE[object.__name__],
+            self._namespace.set_namespace_by_name(
+                enum_name,
+                Namespace(
+                    ObjectKind.UNKNOWN,
+                    self._namespace.module_path,
+                    self._namespace.local_path.join(enum_name),
+                    BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                        LocalObjectPath.from_object_name(object.__qualname__)
+                    ),
+                ),
             )
 
     @override
@@ -289,17 +356,26 @@ class NamespaceParser(ast.NodeVisitor):
                 if metaclass_namespace is None:
                     continue
                 class_namespace.append_sub_namespace(metaclass_namespace)
-        for base_node in reversed(node.bases):
+        for index, base_node in reversed([*enumerate(node.bases)]):
             class_parser.visit(base_node)
-            base_namespace = self._lookup_node(base_node)
+            base_namespace = self._resolve_node(
+                base_node,
+                local_path=class_namespace.local_path.join(
+                    # FIXME: add support for indexing?
+                    f'__bases___{index}'
+                ),
+                module_path=class_namespace.module_path,
+            )
             if base_namespace is None:
                 continue
             class_namespace.append_sub_namespace(base_namespace)
         if len(node.bases) == 0:
             class_namespace.append_sub_namespace(
-                BUILTINS_MODULE_NAMESPACE[object.__name__]
+                BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                    LocalObjectPath.from_object_name(object.__qualname__)
+                )
             )
-        self._namespace[class_name] = class_namespace
+        self._namespace.set_namespace_by_name(class_name, class_namespace)
         self._namespace.set_object_by_name(
             class_name, class_namespace.as_object()
         )
@@ -310,28 +386,41 @@ class NamespaceParser(ast.NodeVisitor):
 
     @override
     def visit_For(self, node: ast.For) -> None:
-        target_local_path = self._resolve_assignment_target(node.target)
-        assert target_local_path is not None
-        queue: list[_ResolvedAssignmentTarget] = (
-            [target_local_path]
-            if isinstance(target_local_path, LocalObjectPath)
-            else list(target_local_path)
-        )
-        while queue:
-            candidate_local_path = queue.pop()
-            if not isinstance(candidate_local_path, LocalObjectPath):
-                assert candidate_local_path is not None
-                queue.extend(candidate_local_path)
-                continue
-            namespace = self._namespace
-            for component in candidate_local_path.components[:-1]:
-                namespace = namespace[component]
-            namespace[candidate_local_path.components[-1]] = Namespace(
-                ObjectKind.UNKNOWN,
-                self._namespace.module_path,
-                candidate_local_path,
+        resolved_target = self._resolve_assignment_target(node.target)
+        assert resolved_target is not None
+        for target_local_path in _flatten_resolved_assignment_target(
+            resolved_target
+        ):
+            self._resolve_absolute_local_path(
+                target_local_path.absolute
+            ).set_namespace_by_path(
+                target_local_path.relative,
+                Namespace(
+                    ObjectKind.UNKNOWN,
+                    self._namespace.module_path,
+                    target_local_path.unsplit(),
+                ),
             )
-        self.generic_visit(node)
+        try:
+            iterable = self._evaluate_node(node.iter)
+        except _EVALUATION_EXCEPTIONS:
+            self.generic_visit(node)
+        else:
+            for element in iterable:
+                for (
+                    object_split_path,
+                    value,
+                ) in _combine_resolved_assignment_target_with_value(
+                    resolved_target, element
+                ):
+                    if object_split_path is not None:
+                        self._resolve_absolute_local_path(
+                            object_split_path.absolute
+                        ).set_object_by_path(object_split_path.relative, value)
+                for body_node in node.body:
+                    self.visit(body_node)
+            for else_node in node.orelse:
+                self.visit(else_node)
 
     @override
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -412,7 +501,9 @@ class NamespaceParser(ast.NodeVisitor):
                     self._namespace.local_path,
                 )
             )
-        self._namespace[function_name] = function_namespace
+        self._namespace.set_namespace_by_name(
+            function_name, function_namespace
+        )
 
     @override
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
@@ -436,12 +527,11 @@ class NamespaceParser(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if (module_alias := alias.asname) is not None:
-                self._namespace[module_alias] = module_namespace = (
-                    resolve_module_path(
-                        ModulePath.from_module_name(alias.name),
-                        module_file_paths=self._module_file_paths,
-                        module_paths=self._module_paths,
-                    )
+                module_namespace = self._resolve_module_path(
+                    ModulePath.from_module_name(alias.name)
+                )
+                self._namespace.set_namespace_by_name(
+                    module_alias, module_namespace
                 )
                 self._namespace.set_object_by_name(
                     module_alias, module_namespace.as_object()
@@ -451,13 +541,13 @@ class NamespaceParser(ast.NodeVisitor):
                 module_path = ModulePath.from_module_name(alias.name)
                 module_paths = list(self._module_paths)
                 for submodule_path in module_path.submodule_paths():
-                    submodule_namespace = resolve_module_path(
-                        submodule_path,
-                        module_file_paths=self._module_file_paths,
-                        module_paths=module_paths,
+                    submodule_namespace = self._resolve_module_path(
+                        submodule_path
                     )
                     submodule_last_name = submodule_path.components[-1]
-                    namespace[submodule_last_name] = submodule_namespace
+                    namespace.set_namespace_by_name(
+                        submodule_last_name, submodule_namespace
+                    )
                     namespace.set_object_by_name(
                         submodule_last_name, submodule_namespace.as_object()
                     )
@@ -479,29 +569,28 @@ class NamespaceParser(ast.NodeVisitor):
                 - node.level
             ) or None
             components = list(self._namespace.module_path.components)[:depth]
-            if (module_name := node.module) is not None:
-                components += ModulePath.from_module_name(
-                    module_name
-                ).components
-            top_submodule_path = ModulePath(*components)
-            top_submodule_namespace = resolve_module_path(
-                top_submodule_path,
-                module_file_paths=self._module_file_paths,
-                module_paths=self._module_paths,
-            )
-            if is_package and node.level == 1:
-                self._namespace[top_submodule_path.components[-1]] = (
-                    top_submodule_namespace
+            if (submodule_relative_name := node.module) is not None:
+                submodule_relative_path_components = (
+                    ModulePath.from_module_name(
+                        submodule_relative_name
+                    ).components
                 )
+                components += submodule_relative_path_components
+                if is_package:
+                    self._namespace.set_namespace_by_name(
+                        submodule_relative_path_components[0],
+                        self._resolve_module_path(
+                            self._namespace.module_path.join(
+                                submodule_relative_path_components[0]
+                            )
+                        ),
+                    )
+            top_submodule_path = ModulePath(*components)
         else:
             assert node.module is not None, ast.unparse(node)
             assert node.level == 0, ast.unparse(node)
             top_submodule_path = ModulePath.from_module_name(node.module)
-            top_submodule_namespace = resolve_module_path(
-                top_submodule_path,
-                module_file_paths=self._module_file_paths,
-                module_paths=self._module_paths,
-            )
+        top_submodule_namespace = self._resolve_module_path(top_submodule_path)
         for alias in node.names:
             if alias.name == '*':
                 assert self._namespace.kind is ObjectKind.MODULE, (
@@ -514,26 +603,27 @@ class NamespaceParser(ast.NodeVisitor):
                 continue
             value: Any | Missing
             try:
-                object_namespace = top_submodule_namespace[alias.name]
+                object_namespace = (
+                    top_submodule_namespace.get_namespace_by_name(alias.name)
+                )
             except KeyError:
                 if (
                     submodule_path := top_submodule_namespace.module_path.join(
                         alias.name
                     )
                 ) in self._module_file_paths:
-                    object_namespace = resolve_module_path(
-                        submodule_path,
-                        module_file_paths=self._module_file_paths,
-                        module_paths=self._module_paths,
+                    object_namespace = self._resolve_module_path(
+                        submodule_path
                     )
                     value = object_namespace.as_object()
                 else:
-                    object_namespace = top_submodule_namespace[alias.name] = (
-                        Namespace(
-                            ObjectKind.UNKNOWN,
-                            top_submodule_namespace.module_path,
-                            LocalObjectPath(alias.name),
-                        )
+                    object_namespace = Namespace(
+                        ObjectKind.UNKNOWN,
+                        top_submodule_namespace.module_path,
+                        LocalObjectPath(alias.name),
+                    )
+                    top_submodule_namespace.set_namespace_by_name(
+                        alias.name, object_namespace
                     )
                     value = MISSING
             else:
@@ -544,7 +634,9 @@ class NamespaceParser(ast.NodeVisitor):
                 except KeyError:
                     value = MISSING
             object_alias_or_name = alias.asname or alias.name
-            self._namespace[object_alias_or_name] = object_namespace
+            self._namespace.set_namespace_by_name(
+                object_alias_or_name, object_namespace
+            )
             if value is not MISSING:
                 self._namespace.set_object_by_name(object_alias_or_name, value)
 
@@ -559,14 +651,17 @@ class NamespaceParser(ast.NodeVisitor):
         target_node = node.target
         assert isinstance(target_node.ctx, ast.Store)
         target_name = target_node.id
-        self._namespace[target_name] = (
-            value_namespace
-            if value_namespace is not None
-            else Namespace(
-                ObjectKind.UNKNOWN,
-                self._namespace.module_path,
-                self._namespace.local_path.join(target_name),
-            )
+        self._namespace.set_namespace_by_name(
+            target_name,
+            (
+                value_namespace
+                if value_namespace is not None
+                else Namespace(
+                    ObjectKind.UNKNOWN,
+                    self._namespace.module_path,
+                    self._namespace.local_path.join(target_name),
+                )
+            ),
         )
 
     @override
@@ -649,7 +744,7 @@ class NamespaceParser(ast.NodeVisitor):
     def visit_With(self, node: ast.With) -> None:
         try:
             self.generic_visit(node)
-        except (AttributeError, ImportError, NameError) as error:
+        except _EVALUATION_EXCEPTIONS as error:
             for item_node in node.items:
                 item_expression_node = item_node.context_expr
                 if isinstance(item_expression_node, ast.Call):
@@ -687,8 +782,10 @@ class NamespaceParser(ast.NodeVisitor):
                                 )
                                 and (
                                     exception_namespace.local_path
-                                    == LocalObjectPath.from_object_name(
-                                        exception_cls.__qualname__
+                                    == (
+                                        LocalObjectPath.from_object_name(
+                                            exception_cls.__qualname__
+                                        )
                                     )
                                 )
                                 for exception_cls in type(error).mro()[:-1]
@@ -708,15 +805,23 @@ class NamespaceParser(ast.NodeVisitor):
 
     @_evaluate_node.register(ast.Call)
     def _(self, node: ast.Call, /) -> Any:
-        kwargs: dict[str, Any] = {}
-        for keyword in node.keywords:
-            if (parameter_name := keyword.arg) is not None:
-                kwargs[parameter_name] = self._evaluate_node(keyword.value)
+        args: list[Any] = []
+        for positional_argument_node in node.args:
+            if isinstance(positional_argument_node, ast.Starred):
+                args.extend(
+                    self._evaluate_node(positional_argument_node.value)
+                )
             else:
-                kwargs.update(self._evaluate_node(keyword.value))
-        return self._evaluate_node(node.func)(
-            *map(self._evaluate_node, node.args), **kwargs
-        )
+                args.append(self._evaluate_node(positional_argument_node))
+        kwargs: dict[str, Any] = {}
+        for keyword_argument_node in node.keywords:
+            if (parameter_name := keyword_argument_node.arg) is not None:
+                kwargs[parameter_name] = self._evaluate_node(
+                    keyword_argument_node.value
+                )
+            else:
+                kwargs.update(self._evaluate_node(keyword_argument_node.value))
+        return self._evaluate_node(node.func)(*args, **kwargs)
 
     _binary_operators_by_operator_type: ClassVar[
         Mapping[type[ast.operator], Callable[[Any, Any], Any]]
@@ -911,16 +1016,76 @@ class NamespaceParser(ast.NodeVisitor):
         assert result.kind is ObjectKind.MODULE, result
         return result
 
-    def _resolve_name(self, name: str, /) -> Namespace:
+    @functools.singledispatchmethod
+    def _resolve_absolute_local_path(
+        self, path: LocalObjectPath, /
+    ) -> Namespace:
+        if path == self._namespace.local_path:
+            return self._namespace
+        return self._get_module_namespace().get_namespace_by_path(path)
+
+    @functools.singledispatchmethod
+    def _resolve_assignment_target(
+        self, _node: ast.expr, /
+    ) -> _ResolvedAssignmentTarget:
+        return None
+
+    @_resolve_assignment_target.register(ast.Attribute)
+    def _(self, node: ast.Attribute, /) -> _ResolvedAssignmentTarget:
+        if (
+            object_path := self._resolve_assignment_target(node.value)
+        ) is not None:
+            assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
+            return object_path.join(node.attr)
+        return None
+
+    @_resolve_assignment_target.register(ast.List)
+    @_resolve_assignment_target.register(ast.Tuple)
+    def _(self, node: ast.List | ast.Tuple, /) -> _ResolvedAssignmentTarget:
+        return [
+            self._resolve_assignment_target(element_node)
+            for element_node in node.elts
+        ]
+
+    @_resolve_assignment_target.register(ast.Name)
+    def _(self, node: ast.Name, /) -> _ResolvedAssignmentTarget:
+        return ResolvedAssignmentTargetSplitPath(
+            self._namespace.local_path, LocalObjectPath(node.id)
+        )
+
+    @_resolve_assignment_target.register(ast.NamedExpr)
+    def _(self, node: ast.NamedExpr, /) -> _ResolvedAssignmentTarget:
+        return self._resolve_assignment_target(node.value)
+
+    @_resolve_assignment_target.register(ast.Subscript)
+    def _(self, node: ast.Subscript, /) -> _ResolvedAssignmentTarget:
+        value_namespace = self._lookup_node(node.value)
+        if value_namespace is None:
+            return None
+        if not (
+            value_namespace.kind is ObjectKind.ROUTINE_CALL
+            and value_namespace.module_path == BUILTINS_MODULE_PATH
+            and value_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
+        ):
+            return None
         try:
-            return self._namespace[name]
-        except KeyError:
-            for parent_namespace in self._parent_namespaces:
-                try:
-                    return parent_namespace[name]
-                except KeyError:
-                    continue
-            raise NameError(name) from None
+            slice_value = self._evaluate_node(node.slice)
+        except _EVALUATION_EXCEPTIONS:
+            return None
+        assert isinstance(slice_value, str), ast.unparse(node)
+        return ResolvedAssignmentTargetSplitPath(
+            LocalObjectPath(), LocalObjectPath(slice_value)
+        )
+
+    def _resolve_module_path(self, module_path: ModulePath, /) -> Namespace:
+        return resolve_module_path(
+            module_path,
+            module_file_paths=self._module_file_paths,
+            module_paths=self._module_paths,
+        )
+
+    def _resolve_object_name(self, name: str, /) -> Namespace:
+        return _resolve_name(name, self._namespace, *self._parent_namespaces)
 
     @functools.singledispatchmethod
     def _resolve_node(
@@ -928,8 +1093,8 @@ class NamespaceParser(ast.NodeVisitor):
         _node: ast.expr,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
 
@@ -939,18 +1104,16 @@ class NamespaceParser(ast.NodeVisitor):
         node: ast.Attribute,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
-        try:
-            return (
-                object_namespace[node.attr]
-                if (object_namespace := self._lookup_node(node.value))
-                is not None
-                else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-            )
-        except KeyError:
-            raise
+        if (object_namespace := self._lookup_node(node.value)) is not None:
+            attribute_name = node.attr
+            try:
+                return object_namespace.get_namespace_by_name(attribute_name)
+            except KeyError:
+                raise AttributeError(attribute_name) from None
+        return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
 
     @_resolve_node.register(ast.Call)
     def _(
@@ -958,8 +1121,8 @@ class NamespaceParser(ast.NodeVisitor):
         node: ast.Call,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         callable_namespace = self._lookup_node(node.func)
         if callable_namespace is None:
@@ -970,6 +1133,15 @@ class NamespaceParser(ast.NodeVisitor):
                 callable_namespace.module_path,
                 callable_namespace.local_path,
                 callable_namespace,
+            )
+        if (
+            callable_namespace.module_path == BUILTINS_MODULE_PATH
+            and callable_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
+        ):
+            return Namespace(
+                ObjectKind.ROUTINE_CALL,
+                callable_namespace.module_path,
+                callable_namespace.local_path,
             )
         if (callable_namespace.module_path == COLLECTIONS_MODULE_PATH) and (
             callable_namespace.local_path == NAMED_TUPLE_LOCAL_OBJECT_PATH
@@ -992,13 +1164,21 @@ class NamespaceParser(ast.NodeVisitor):
                 ObjectKind.CLASS,
                 module_path,
                 local_path,
-                BUILTINS_MODULE_NAMESPACE[object.__name__],
+                BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                    LocalObjectPath.from_object_name(tuple.__qualname__)
+                ),
+                BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                    LocalObjectPath.from_object_name(object.__qualname__)
+                ),
             )
             for field_name in named_tuple_field_names:
-                named_tuple_namespace[field_name] = Namespace(
-                    ObjectKind.UNKNOWN,
-                    named_tuple_namespace.module_path,
-                    named_tuple_namespace.local_path.join(field_name),
+                named_tuple_namespace.set_namespace_by_name(
+                    field_name,
+                    Namespace(
+                        ObjectKind.UNKNOWN,
+                        named_tuple_namespace.module_path,
+                        named_tuple_namespace.local_path.join(field_name),
+                    ),
                 )
             return named_tuple_namespace
         return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
@@ -1010,8 +1190,8 @@ class NamespaceParser(ast.NodeVisitor):
         _node: ast.Dict | ast.DictComp,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return Namespace(
             ObjectKind.INSTANCE,
@@ -1029,8 +1209,8 @@ class NamespaceParser(ast.NodeVisitor):
         _node: ast.List | ast.ListComp,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return Namespace(
             ObjectKind.INSTANCE,
@@ -1047,8 +1227,8 @@ class NamespaceParser(ast.NodeVisitor):
         _node: ast.Tuple,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return Namespace(
             ObjectKind.INSTANCE,
@@ -1066,8 +1246,8 @@ class NamespaceParser(ast.NodeVisitor):
         _node: ast.Set | ast.SetComp,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return Namespace(
             ObjectKind.INSTANCE,
@@ -1084,10 +1264,10 @@ class NamespaceParser(ast.NodeVisitor):
         node: ast.Name,
         /,
         *,
-        module_path: ModulePath,  # noqa: ARG002
         local_path: LocalObjectPath,  # noqa: ARG002
+        module_path: ModulePath,  # noqa: ARG002
     ) -> Namespace:
-        return self._resolve_name(node.id)
+        return self._resolve_object_name(node.id)
 
     @_resolve_node.register(ast.NamedExpr)
     def _(
@@ -1095,8 +1275,8 @@ class NamespaceParser(ast.NodeVisitor):
         node: ast.NamedExpr,
         /,
         *,
-        module_path: ModulePath,
         local_path: LocalObjectPath,
+        module_path: ModulePath,
     ) -> Namespace:
         return (
             result
@@ -1104,76 +1284,78 @@ class NamespaceParser(ast.NodeVisitor):
             else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
         )
 
-    @functools.singledispatchmethod
-    def _lookup_node(self, _node: ast.expr, /) -> Namespace | None:
-        return None
+    def _lookup_node(self, node: ast.expr, /) -> Namespace | None:
+        return _lookup_node(node, self._namespace, *self._parent_namespaces)
 
-    @_lookup_node.register(ast.Attribute)
-    def _(self, node: ast.Attribute, /) -> Namespace | None:
-        object_namespace = self._lookup_node(node.value)
-        return (
-            None if object_namespace is None else object_namespace[node.attr]
+
+@functools.singledispatch
+def _lookup_node(
+    _node: ast.expr, _namespace: Namespace, /, *_parent_namespaces: Namespace
+) -> Namespace | None:
+    return None
+
+
+@_lookup_node.register(ast.Attribute)
+def _(
+    node: ast.Attribute, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace | None:
+    object_namespace = _lookup_node(node.value, namespace, *parent_namespaces)
+    return (
+        None
+        if object_namespace is None
+        else object_namespace.get_namespace_by_name(node.attr)
+    )
+
+
+@_lookup_node.register(ast.Call)
+def _(
+    node: ast.Call, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace | None:
+    callable_namespace = _lookup_node(node.func, namespace, *parent_namespaces)
+    if callable_namespace is None:
+        return None
+    if callable_namespace.kind is ObjectKind.CLASS:
+        return Namespace(
+            ObjectKind.INSTANCE,
+            callable_namespace.module_path,
+            callable_namespace.local_path,
+            callable_namespace,
         )
+    if callable_namespace.kind is ObjectKind.ROUTINE:
+        return Namespace(
+            ObjectKind.ROUTINE_CALL,
+            callable_namespace.module_path,
+            callable_namespace.local_path,
+        )
+    return None
 
-    @_lookup_node.register(ast.Call)
-    def _(self, node: ast.Call, /) -> Namespace | None:
-        callable_namespace = self._lookup_node(node.func)
-        if callable_namespace is None:
-            return None
-        if callable_namespace.kind is ObjectKind.CLASS:
-            return Namespace(
-                ObjectKind.INSTANCE,
-                callable_namespace.module_path,
-                callable_namespace.local_path,
-                callable_namespace,
-            )
-        if callable_namespace.kind is ObjectKind.ROUTINE:
-            return Namespace(
-                ObjectKind.ROUTINE_CALL,
-                callable_namespace.module_path,
-                callable_namespace.local_path,
-                callable_namespace,
-            )
-        return None
 
-    @_lookup_node.register(ast.Name)
-    def _(self, node: ast.Name, /) -> Namespace | None:
-        return self._resolve_name(node.id)
+@_lookup_node.register(ast.Name)
+def _(
+    node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace | None:
+    return _resolve_name(node.id, namespace, *parent_namespaces)
 
-    @_lookup_node.register(ast.NamedExpr)
-    def _(self, node: ast.NamedExpr, /) -> Namespace | None:
-        return self._lookup_node(node.value)
 
-    @functools.singledispatchmethod
-    def _resolve_assignment_target(
-        self, _node: ast.expr, /
-    ) -> _ResolvedAssignmentTarget:
-        return None
+@_lookup_node.register(ast.NamedExpr)
+def _(
+    node: ast.NamedExpr, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace | None:
+    return _lookup_node(node.value, namespace, *parent_namespaces)
 
-    @_resolve_assignment_target.register(ast.Attribute)
-    def _(self, node: ast.Attribute, /) -> _ResolvedAssignmentTarget:
-        if (
-            object_local_path := self._resolve_assignment_target(node.value)
-        ) is not None:
-            assert isinstance(object_local_path, LocalObjectPath)
-            return object_local_path.join(node.attr)
-        return None
 
-    @_resolve_assignment_target.register(ast.Name)
-    def _(self, node: ast.Name, /) -> _ResolvedAssignmentTarget:
-        return LocalObjectPath(node.id)
-
-    @_resolve_assignment_target.register(ast.List)
-    @_resolve_assignment_target.register(ast.Tuple)
-    def _(self, node: ast.List | ast.Tuple, /) -> _ResolvedAssignmentTarget:
-        return [
-            self._resolve_assignment_target(element_node)
-            for element_node in node.elts
-        ]
-
-    @_resolve_assignment_target.register(ast.NamedExpr)
-    def _(self, node: ast.NamedExpr, /) -> _ResolvedAssignmentTarget:
-        return self._resolve_assignment_target(node.value)
+def _resolve_name(
+    name: str, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace:
+    try:
+        return namespace.get_namespace_by_name(name)
+    except KeyError:
+        for parent_namespace in parent_namespaces:
+            try:
+                return parent_namespace.get_namespace_by_name(name)
+            except KeyError:
+                continue
+        raise NameError(name) from None
 
 
 def load_module_file_paths(
@@ -1277,7 +1459,7 @@ def resolve_module_path(
     )
     for component in rest_components:
         try:
-            result = result[component]
+            result = result.get_namespace_by_name(component)
         except KeyError:
             submodule_path = result.module_path.join(component)
             result = _load_module_path_namespace(
@@ -1637,6 +1819,26 @@ def _parse_modules(*modules: types.ModuleType) -> None:
                 sub_module_path
             ].get_namespace_by_path(sub_local_path)
             namespace.append_sub_namespace(sub_namespace)
+
+
+def _flatten_resolved_assignment_target(
+    target: _ResolvedAssignmentTarget, /
+) -> Iterable[ResolvedAssignmentTargetSplitPath]:
+    if target is None:
+        return
+    queue: list[_ResolvedAssignmentTarget] = (
+        [target]
+        if isinstance(target, ResolvedAssignmentTargetSplitPath)
+        else list(target)
+    )
+    while queue:
+        candidate = queue.pop()
+        if candidate is None:
+            continue
+        if not isinstance(candidate, ResolvedAssignmentTargetSplitPath):
+            queue.extend(candidate)
+            continue
+        yield candidate
 
 
 BUILTINS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
