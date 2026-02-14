@@ -123,7 +123,7 @@ def _combine_resolved_assignment_target_with_value(
         yield target, value
         return
     if isinstance(value, AttributeMapping):
-        # e.g.: a case with `enum.Enum` class unpacking
+        # e.g.: a case of `enum.Enum` class unpacking
         return
     yield from chain.from_iterable(
         map(_combine_resolved_assignment_target_with_value, target, value)
