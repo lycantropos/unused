@@ -32,6 +32,7 @@ from typing import Any, ClassVar, Final, TypeAlias
 
 from typing_extensions import Self, override
 
+from .attribute_mapping import AttributeMapping
 from .dependency_node import DependencyNode
 from .missing import MISSING, Missing
 from .namespace import Namespace, ObjectKind
@@ -120,6 +121,9 @@ def _combine_resolved_assignment_target_with_value(
 ) -> Iterable[tuple[ResolvedAssignmentTargetSplitPath | None, Any]]:
     if target is None or isinstance(target, ResolvedAssignmentTargetSplitPath):
         yield target, value
+        return
+    if isinstance(value, AttributeMapping):
+        # e.g.: a case with `enum.Enum` class unpacking
         return
     yield from chain.from_iterable(
         map(_combine_resolved_assignment_target_with_value, target, value)
