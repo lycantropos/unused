@@ -1020,7 +1020,9 @@ class NamespaceParser(ast.NodeVisitor):
         assert result.kind is ObjectKind.MODULE, result
         return result
 
-    @functools.singledispatchmethod
+    def _lookup_node(self, node: ast.expr, /) -> Namespace | None:
+        return _lookup_node(node, self._namespace, *self._parent_namespaces)
+
     def _resolve_absolute_local_path(
         self, path: LocalObjectPath, /
     ) -> Namespace:
@@ -1087,9 +1089,6 @@ class NamespaceParser(ast.NodeVisitor):
             module_file_paths=self._module_file_paths,
             module_paths=self._module_paths,
         )
-
-    def _resolve_object_name(self, name: str, /) -> Namespace:
-        return _resolve_name(name, self._namespace, *self._parent_namespaces)
 
     @functools.singledispatchmethod
     def _resolve_node(
@@ -1225,43 +1224,6 @@ class NamespaceParser(ast.NodeVisitor):
             ),
         )
 
-    @_resolve_node.register(ast.Tuple)
-    def _(
-        self,
-        _node: ast.Tuple,
-        /,
-        *,
-        local_path: LocalObjectPath,
-        module_path: ModulePath,
-    ) -> Namespace:
-        return Namespace(
-            ObjectKind.INSTANCE,
-            module_path,
-            local_path,
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-                LocalObjectPath.from_object_name(tuple.__qualname__)
-            ),
-        )
-
-    @_resolve_node.register(ast.Set)
-    @_resolve_node.register(ast.SetComp)
-    def _(
-        self,
-        _node: ast.Set | ast.SetComp,
-        /,
-        *,
-        local_path: LocalObjectPath,
-        module_path: ModulePath,
-    ) -> Namespace:
-        return Namespace(
-            ObjectKind.INSTANCE,
-            module_path,
-            local_path,
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-                LocalObjectPath.from_object_name(set.__qualname__)
-            ),
-        )
-
     @_resolve_node.register(ast.Name)
     def _(
         self,
@@ -1288,8 +1250,47 @@ class NamespaceParser(ast.NodeVisitor):
             else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
         )
 
-    def _lookup_node(self, node: ast.expr, /) -> Namespace | None:
-        return _lookup_node(node, self._namespace, *self._parent_namespaces)
+    @_resolve_node.register(ast.Set)
+    @_resolve_node.register(ast.SetComp)
+    def _(
+        self,
+        _node: ast.Set | ast.SetComp,
+        /,
+        *,
+        local_path: LocalObjectPath,
+        module_path: ModulePath,
+    ) -> Namespace:
+        return Namespace(
+            ObjectKind.INSTANCE,
+            module_path,
+            local_path,
+            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                LocalObjectPath.from_object_name(set.__qualname__)
+            ),
+        )
+
+    @_resolve_node.register(ast.Tuple)
+    def _(
+        self,
+        _node: ast.Tuple,
+        /,
+        *,
+        local_path: LocalObjectPath,
+        module_path: ModulePath,
+    ) -> Namespace:
+        return Namespace(
+            ObjectKind.INSTANCE,
+            module_path,
+            local_path,
+            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                LocalObjectPath.from_object_name(tuple.__qualname__)
+            ),
+        )
+
+    def _resolve_object_name(self, name: str, /) -> Namespace:
+        return _resolve_object_name(
+            name, self._namespace, *self._parent_namespaces
+        )
 
 
 @functools.singledispatch
@@ -1338,7 +1339,7 @@ def _(
 def _(
     node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
 ) -> Namespace | None:
-    return _resolve_name(node.id, namespace, *parent_namespaces)
+    return _resolve_object_name(node.id, namespace, *parent_namespaces)
 
 
 @_lookup_node.register(ast.NamedExpr)
@@ -1348,7 +1349,7 @@ def _(
     return _lookup_node(node.value, namespace, *parent_namespaces)
 
 
-def _resolve_name(
+def _resolve_object_name(
     name: str, namespace: Namespace, /, *parent_namespaces: Namespace
 ) -> Namespace:
     try:
