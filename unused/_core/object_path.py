@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import builtins
+import collections
+import functools
+import types
 from collections.abc import Iterable, Sequence
 from itertools import accumulate
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 from typing_extensions import Self
 
@@ -143,3 +147,41 @@ def _is_object_path_component_valid(component: str, /) -> bool:
         and len(component) > 0
         and component.isidentifier()
     )
+
+
+BUILTINS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
+    builtins.__name__
+)
+COLLECTIONS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
+    collections.__name__
+)
+TYPES_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
+    types.__name__
+)
+FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'FunctionType'
+)
+assert (
+    functools.reduce(
+        builtins.getattr, FUNCTION_TYPE_LOCAL_OBJECT_PATH.components, types
+    )
+    is types.FunctionType  # type: ignore[comparison-overlap]
+)
+GLOBALS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath.from_object_name(builtins.globals.__qualname__)
+)
+assert (
+    functools.reduce(
+        builtins.getattr, GLOBALS_LOCAL_OBJECT_PATH.components, builtins
+    )
+    is builtins.globals  # type: ignore[comparison-overlap]
+)
+NAMED_TUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath.from_object_name(collections.namedtuple.__qualname__)
+)
+assert (
+    functools.reduce(
+        builtins.getattr, NAMED_TUPLE_LOCAL_OBJECT_PATH.components, collections
+    )
+    is collections.namedtuple  # type: ignore[comparison-overlap]
+)
