@@ -196,45 +196,7 @@ class NamespaceParser(ast.NodeVisitor):
             assert (
                 ctx := getattr(target_node, 'ctx', None)
             ) is None or isinstance(ctx, ast.Store), ast.unparse(node)
-            resolved_target = self._resolve_assignment_target(target_node)
-            for (
-                target_object_split_path
-            ) in _flatten_resolved_assignment_target(resolved_target):
-                target_namespace = self._resolve_absolute_local_path(
-                    target_object_split_path.absolute
-                )
-                target_namespace.set_namespace_by_path(
-                    target_object_split_path.relative,
-                    (
-                        self._resolve_node(
-                            node.value,
-                            local_path=target_object_split_path.unsplit(),
-                            module_path=target_namespace.module_path,
-                        )
-                        if isinstance(
-                            resolved_target, ResolvedAssignmentTargetSplitPath
-                        )
-                        else Namespace(
-                            ObjectKind.UNKNOWN,
-                            target_namespace.module_path,
-                            target_object_split_path.unsplit(),
-                        )
-                    ),
-                )
-            if value is not MISSING:
-                for (
-                    maybe_target_object_split_path,
-                    sub_value,
-                ) in _combine_resolved_assignment_target_with_value(
-                    resolved_target, value
-                ):
-                    if maybe_target_object_split_path is None:
-                        continue
-                    self._resolve_absolute_local_path(
-                        maybe_target_object_split_path.absolute
-                    ).set_object_by_path(
-                        maybe_target_object_split_path.relative, sub_value
-                    )
+            self._process_assignment(target_node, node.value, value)
 
     @override
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -746,6 +708,14 @@ class NamespaceParser(ast.NodeVisitor):
 
     @override
     def visit_With(self, node: ast.With) -> None:
+        for item_node in node.items:
+            if (target_node := item_node.optional_vars) is not None:
+                value_node = item_node.context_expr
+                try:
+                    value = self._evaluate_node(value_node)
+                except _EVALUATION_EXCEPTIONS:
+                    value = MISSING
+                self._process_assignment(target_node, value_node, value)
         try:
             self.generic_visit(node)
         except _EVALUATION_EXCEPTIONS as error:
@@ -1022,6 +992,53 @@ class NamespaceParser(ast.NodeVisitor):
 
     def _lookup_node(self, node: ast.expr, /) -> Namespace | None:
         return _lookup_node(node, self._namespace, *self._parent_namespaces)
+
+    def _process_assignment(
+        self,
+        target_node: ast.expr,
+        value_node: ast.expr,
+        value: Any | Missing,
+        /,
+    ) -> None:
+        resolved_target = self._resolve_assignment_target(target_node)
+        for target_object_split_path in _flatten_resolved_assignment_target(
+            resolved_target
+        ):
+            target_namespace = self._resolve_absolute_local_path(
+                target_object_split_path.absolute
+            )
+            target_namespace.set_namespace_by_path(
+                target_object_split_path.relative,
+                (
+                    self._resolve_node(
+                        value_node,
+                        local_path=target_object_split_path.unsplit(),
+                        module_path=target_namespace.module_path,
+                    )
+                    if isinstance(
+                        resolved_target, ResolvedAssignmentTargetSplitPath
+                    )
+                    else Namespace(
+                        ObjectKind.UNKNOWN,
+                        target_namespace.module_path,
+                        target_object_split_path.unsplit(),
+                    )
+                ),
+            )
+        if value is not MISSING:
+            for (
+                maybe_target_object_split_path,
+                sub_value,
+            ) in _combine_resolved_assignment_target_with_value(
+                resolved_target, value
+            ):
+                if maybe_target_object_split_path is None:
+                    continue
+                self._resolve_absolute_local_path(
+                    maybe_target_object_split_path.absolute
+                ).set_object_by_path(
+                    maybe_target_object_split_path.relative, sub_value
+                )
 
     def _resolve_absolute_local_path(
         self, path: LocalObjectPath, /
