@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import collections
 import functools
+import sys
 import types
 from collections.abc import Iterable, Sequence
 from itertools import accumulate
@@ -12,7 +13,7 @@ from typing_extensions import Self
 
 
 class ModulePath:
-    COMPONENT_SEPARATOR: ClassVar[str] = '.'
+    COMPONENT_SEPARATOR: ClassVar = '.'
 
     @classmethod
     def from_module_name(cls, name: str, /) -> Self:
@@ -84,9 +85,11 @@ class ModulePath:
 
 
 class LocalObjectPath:
+    COMPONENT_SEPARATOR: ClassVar = '.'
+
     @classmethod
     def from_object_name(cls, name: str, /) -> Self:
-        return cls(*name.split('.'))
+        return cls(*name.split(cls.COMPONENT_SEPARATOR))
 
     @property
     def components(self, /) -> Sequence[str]:
@@ -97,14 +100,17 @@ class LocalObjectPath:
         assert len(self._components) > 0, self
         return type(self)(*self._components[:-1])
 
+    def join(self, /, *components: str) -> Self:
+        return type(self)(*self._components, *components)
+
     def starts_with(self, other: Self, /) -> bool:
         return (
             len(other._components) <= len(self._components)  # noqa: SLF001
             and self._components[: len(other._components)] == other._components  # noqa: SLF001
         )
 
-    def join(self, /, *components: str) -> Self:
-        return type(self)(*self._components, *components)
+    def to_object_name(self, /) -> str:
+        return self.COMPONENT_SEPARATOR.join(self.components)
 
     _components: tuple[str, ...]
 
@@ -160,42 +166,82 @@ BUILTINS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
 COLLECTIONS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
     collections.__name__
 )
+SYS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(sys.__name__)
 TYPES_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
     types.__name__
 )
-FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'FunctionType'
+
+DICT_FIELD_NAME: Final = '__dict__'
+
+
+def _search_local_path(
+    local_path: LocalObjectPath, module: types.ModuleType, /
+) -> Any:
+    return functools.reduce(builtins.getattr, local_path.components, module)
+
+
+BUILTINS_DICT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'dict'
 )
 assert (
-    functools.reduce(
-        builtins.getattr, FUNCTION_TYPE_LOCAL_OBJECT_PATH.components, types
-    )
-    is types.FunctionType  # type: ignore[comparison-overlap]
+    _search_local_path(BUILTINS_DICT_LOCAL_OBJECT_PATH, builtins)
+    is builtins.dict
 )
-GLOBALS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+BUILTINS_FROZENSET_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'frozenset'
+)
+assert (
+    _search_local_path(BUILTINS_FROZENSET_LOCAL_OBJECT_PATH, builtins)
+    is builtins.frozenset
+)
+BUILTINS_GLOBALS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
     LocalObjectPath.from_object_name(builtins.globals.__qualname__)
 )
 assert (
-    functools.reduce(
-        builtins.getattr, GLOBALS_LOCAL_OBJECT_PATH.components, builtins
-    )
-    is builtins.globals  # type: ignore[comparison-overlap]
+    _search_local_path(BUILTINS_GLOBALS_LOCAL_OBJECT_PATH, builtins)
+    is builtins.globals
 )
-NAMED_TUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(collections.namedtuple.__qualname__)
+BUILTINS_LIST_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'list'
 )
 assert (
-    functools.reduce(
-        builtins.getattr, NAMED_TUPLE_LOCAL_OBJECT_PATH.components, collections
-    )
-    is collections.namedtuple  # type: ignore[comparison-overlap]
+    _search_local_path(BUILTINS_LIST_LOCAL_OBJECT_PATH, builtins)
+    is builtins.list
 )
-TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+BUILTINS_SET_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath('set')
+assert (
+    _search_local_path(BUILTINS_SET_LOCAL_OBJECT_PATH, builtins)
+    is builtins.set
+)
+BUILTINS_TUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'tuple'
+)
+assert (
+    _search_local_path(BUILTINS_TUPLE_LOCAL_OBJECT_PATH, builtins)
+    is builtins.tuple
+)
+BUILTINS_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
     LocalObjectPath.from_object_name(builtins.type.__qualname__)
 )
 assert (
-    functools.reduce(
-        builtins.getattr, TYPE_LOCAL_OBJECT_PATH.components, builtins
-    )
-    is builtins.type  # type: ignore[comparison-overlap]
+    _search_local_path(BUILTINS_TYPE_LOCAL_OBJECT_PATH, builtins)
+    is builtins.type
+)
+COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath.from_object_name(collections.namedtuple.__qualname__)
+)
+assert (
+    _search_local_path(COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH, collections)
+    is collections.namedtuple
+)
+SYS_MODULES_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'modules'
+)
+assert _search_local_path(SYS_MODULES_LOCAL_OBJECT_PATH, sys) is sys.modules
+TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath('FunctionType')
+)
+assert (
+    _search_local_path(TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH, types)
+    is types.FunctionType
 )

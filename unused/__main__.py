@@ -223,6 +223,8 @@ def main() -> None:
                 function_definition_nodes=function_definition_nodes,
                 module_file_paths=module_file_paths,
             )
+        except ModuleNotFoundError:
+            continue
         except Exception as error:
             stderr.write(f'Failed loading {module_path.to_module_name()!r}:\n')
             stderr.writelines(

@@ -2,23 +2,20 @@ from __future__ import annotations
 
 import ast
 import functools
-from collections.abc import Sequence
-from typing import TypeAlias
+from collections.abc import Iterable, Sequence
+from itertools import chain
+from typing import Any, TypeAlias
 
 from typing_extensions import Self
 
-from .evaluation import EVALUATION_EXCEPTIONS, evaluate_node
+from .attribute_mapping import AttributeMapping
+from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import (
     lookup_namespace_by_expression_node,
     lookup_namespace_by_object_name,
 )
 from .namespace import Namespace, ObjectKind
-from .object_path import (
-    BUILTINS_MODULE_PATH,
-    GLOBALS_LOCAL_OBJECT_PATH,
-    LocalObjectPath,
-    ModulePath,
-)
+from .object_path import DICT_FIELD_NAME, LocalObjectPath, ModulePath
 
 
 class ResolvedAssignmentTargetSplitPath:
@@ -76,6 +73,24 @@ ResolvedAssignmentTarget: TypeAlias = (
     | ResolvedAssignmentTargetSplitPath
     | None
 )
+
+
+def combine_resolved_assignment_target_with_value(
+    target: ResolvedAssignmentTarget, value: Any, /
+) -> Iterable[tuple[ResolvedAssignmentTargetSplitPath | None, Any]]:
+    if target is None or isinstance(target, ResolvedAssignmentTargetSplitPath):
+        yield target, value
+        return
+    if isinstance(value, AttributeMapping):
+        # e.g.: a case of `enum.Enum` class unpacking
+        return
+    try:
+        iter(value)
+    except TypeError:
+        return
+    yield from chain.from_iterable(
+        map(combine_resolved_assignment_target_with_value, target, value)
+    )
 
 
 @functools.singledispatch
@@ -164,13 +179,15 @@ def _(
     if value_namespace is None:
         return None
     if not (
-        value_namespace.kind is ObjectKind.ROUTINE_CALL
-        and value_namespace.module_path == BUILTINS_MODULE_PATH
-        and value_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
+        value_namespace.kind is ObjectKind.INSTANCE
+        and value_namespace.module_path == namespace.module_path
+        and value_namespace.local_path == LocalObjectPath(DICT_FIELD_NAME)
     ):
         return None
     try:
-        slice_value = evaluate_node(node.slice, namespace, *parent_namespaces)
+        slice_value = evaluate_expression_node(
+            node.slice, namespace, *parent_namespaces
+        )
     except EVALUATION_EXCEPTIONS:
         return None
     assert isinstance(slice_value, str), ast.unparse(node)

@@ -8,7 +8,7 @@ from typing_extensions import Self
 
 from .attribute_mapping import AttributeMapping
 from .mapping_chain import MappingChain
-from .missing import MISSING
+from .missing import MISSING, Missing
 from .object_path import LocalObjectPath, ModulePath
 
 
@@ -129,6 +129,7 @@ class Namespace:
                 ObjectKind.INSTANCE,
                 ObjectKind.PROPERTY,
                 ObjectKind.UNKNOWN,
+                ObjectKind.UNKNOWN_CLASS,
             ):
                 assert name not in self._children
                 self._children[name] = result = type(self)(
@@ -167,6 +168,19 @@ class Namespace:
         (result,) = self._sub_namespaces
         return result
 
+    def safe_delete_object_by_name(self, name: str, /) -> bool:
+        assert isinstance(name, str), name
+        return self._objects.pop(name, MISSING) is not MISSING
+
+    def safe_delete_object_by_path(
+        self, local_path: LocalObjectPath, /
+    ) -> bool:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        namespace = self
+        for component in local_path.components[:-1]:
+            namespace = namespace.get_namespace_by_name(component)
+        return namespace.safe_delete_object_by_name(local_path.components[-1])
+
     def set_namespace_by_name(self, name: str, value: Self, /) -> None:
         assert isinstance(name, str), (name, value)
         assert isinstance(value, type(self)), (name, value)
@@ -184,10 +198,12 @@ class Namespace:
             local_path.components[-1], namespace
         )
 
-    def set_object_by_name(self, name: str, value: Any, /) -> None:
+    def set_object_by_name(self, name: str, value: Any | Missing, /) -> None:
         assert isinstance(name, str), name
-        assert value is not MISSING
         assert name in self._children
+        if value is MISSING:
+            assert name in self._objects
+            self._objects.pop(name, None)
         self._objects[name] = value
 
     def set_object_by_path(

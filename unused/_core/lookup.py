@@ -3,7 +3,16 @@ from __future__ import annotations
 import ast
 import functools
 
+from .module_namespaces import MODULE_NAMESPACES
 from .namespace import Namespace, ObjectKind
+from .object_path import (
+    BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
+    BUILTINS_MODULE_PATH,
+    DICT_FIELD_NAME,
+    ModulePath,
+    SYS_MODULES_LOCAL_OBJECT_PATH,
+    SYS_MODULE_PATH,
+)
 
 
 @functools.singledispatch
@@ -23,10 +32,11 @@ def _(
     )
     if object_namespace is None:
         return None
+    attribute_name = node.attr
     try:
-        return object_namespace.get_namespace_by_name(node.attr)
+        return object_namespace.get_namespace_by_name(attribute_name)
     except KeyError:
-        raise AttributeError(node.attr) from None
+        raise AttributeError(attribute_name) from None
 
 
 @lookup_namespace_by_expression_node.register(ast.Call)
@@ -38,6 +48,13 @@ def _(
     )
     if callable_namespace is None:
         return None
+    if (
+        callable_namespace.module_path == BUILTINS_MODULE_PATH
+        and callable_namespace.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
+    ):
+        return MODULE_NAMESPACES[namespace.module_path].get_namespace_by_name(
+            DICT_FIELD_NAME
+        )
     if callable_namespace.kind is ObjectKind.CLASS:
         return Namespace(
             ObjectKind.INSTANCE,
@@ -78,6 +95,35 @@ def _(
     return lookup_namespace_by_expression_node(
         node.value, namespace, *parent_namespaces
     )
+
+
+@lookup_namespace_by_expression_node.register(ast.Subscript)
+def _(
+    node: ast.Subscript, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> Namespace | None:
+    from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
+
+    value_namespace = lookup_namespace_by_expression_node(
+        node.value, namespace, *parent_namespaces
+    )
+    if value_namespace is None:
+        return None
+    if (
+        value_namespace.kind is ObjectKind.INSTANCE
+        and value_namespace.module_path == SYS_MODULE_PATH
+        and value_namespace.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
+    ):
+        try:
+            module_name = evaluate_expression_node(
+                node.slice, namespace, *parent_namespaces
+            )
+        except EVALUATION_EXCEPTIONS:
+            # assume that namespace is affected
+            return MODULE_NAMESPACES[namespace.module_path]
+        else:
+            assert isinstance(module_name, str), module_name
+            return MODULE_NAMESPACES[ModulePath.from_module_name(module_name)]
+    return None
 
 
 def lookup_namespace_by_object_name(

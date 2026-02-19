@@ -4,21 +4,22 @@ import ast
 import builtins
 import functools
 
-from .evaluation import EVALUATION_EXCEPTIONS, evaluate_node
+from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import (
     lookup_namespace_by_expression_node,
     lookup_namespace_by_object_name,
 )
-from .module_namespaces import BUILTINS_MODULE_NAMESPACE
+from .module_namespaces import BUILTINS_MODULE_NAMESPACE, MODULE_NAMESPACES
 from .namespace import Namespace, ObjectKind
 from .object_path import (
+    BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
+    BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     COLLECTIONS_MODULE_PATH,
-    GLOBALS_LOCAL_OBJECT_PATH,
+    COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH,
+    DICT_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
-    NAMED_TUPLE_LOCAL_OBJECT_PATH,
-    TYPE_LOCAL_OBJECT_PATH,
 )
 
 
@@ -71,7 +72,7 @@ def _(
     if callable_namespace is None:
         return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
     if callable_namespace.module_path == BUILTINS_MODULE_PATH and (
-        callable_namespace.local_path == TYPE_LOCAL_OBJECT_PATH
+        callable_namespace.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
         first_argument_namespace = lookup_namespace_by_expression_node(
             node.args[0], namespace, *parent_namespaces
@@ -82,7 +83,7 @@ def _(
                 module_path,
                 local_path,
                 BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-                    TYPE_LOCAL_OBJECT_PATH
+                    BUILTINS_TYPE_LOCAL_OBJECT_PATH
                 ),
             )
             if (
@@ -92,10 +93,13 @@ def _(
             )
             else Namespace(
                 (
-                    ObjectKind.UNKNOWN
+                    ObjectKind.UNKNOWN_CLASS
                     if (
                         first_argument_namespace is None
-                        or first_argument_namespace.kind is ObjectKind.UNKNOWN
+                        or (
+                            first_argument_namespace.kind
+                            in (ObjectKind.UNKNOWN_CLASS, ObjectKind.UNKNOWN)
+                        )
                     )
                     else ObjectKind.CLASS
                 ),
@@ -118,19 +122,32 @@ def _(
         )
     if (
         callable_namespace.module_path == BUILTINS_MODULE_PATH
-        and callable_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
+        and callable_namespace.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
-        return Namespace(
-            ObjectKind.ROUTINE_CALL,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
+        return MODULE_NAMESPACES[namespace.module_path].get_namespace_by_name(
+            DICT_FIELD_NAME
         )
+    if (
+        callable_namespace.kind is ObjectKind.ROUTINE
+        and callable_namespace.module_path == BUILTINS_MODULE_PATH
+        and (
+            callable_namespace.local_path
+            == LocalObjectPath.from_object_name(builtins.vars.__qualname__)
+        )
+    ):
+        (argument_node,) = node.args
+        argument_namespace = lookup_namespace_by_expression_node(
+            argument_node, namespace, *parent_namespaces
+        )
+        assert argument_namespace is not None
+        return argument_namespace.get_namespace_by_name(DICT_FIELD_NAME)
     if (callable_namespace.module_path == COLLECTIONS_MODULE_PATH) and (
-        callable_namespace.local_path == NAMED_TUPLE_LOCAL_OBJECT_PATH
+        callable_namespace.local_path
+        == COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH
     ):
         _, namedtuple_field_name_node = node.args
         try:
-            named_tuple_field_names = evaluate_node(
+            named_tuple_field_names = evaluate_expression_node(
                 namedtuple_field_name_node, namespace, *parent_namespaces
             )
         except EVALUATION_EXCEPTIONS:

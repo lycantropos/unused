@@ -12,13 +12,18 @@ from .dependency_node import DependencyNode
 from .missing import MISSING
 from .namespace import Namespace, ObjectKind
 from .object_path import (
+    BUILTINS_DICT_LOCAL_OBJECT_PATH,
+    BUILTINS_FROZENSET_LOCAL_OBJECT_PATH,
+    BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
-    FUNCTION_TYPE_LOCAL_OBJECT_PATH,
+    BUILTINS_SET_LOCAL_OBJECT_PATH,
+    BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     LocalObjectPath,
     ModulePath,
+    TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
     TYPES_MODULE_PATH,
 )
-from .safety import is_safe
+from .safety import to_safe
 
 MODULE_NAMESPACES: Final[dict[ModulePath, Namespace]] = {}
 
@@ -229,7 +234,14 @@ def _collect_dependencies(
                             else ObjectKind.CLASS
                         )
                         if inspect.isclass(field_value)
-                        else ObjectKind.UNKNOWN
+                        else (
+                            ObjectKind.INSTANCE
+                            if isinstance(
+                                field_value,
+                                dict | frozenset | list | set | tuple,
+                            )
+                            else ObjectKind.UNKNOWN
+                        )
                     )
                 ),
                 value_dependency_node.module_path,
@@ -240,16 +252,63 @@ def _collect_dependencies(
                 dependant_module_path=(
                     value_dependency_node.dependant_module_path
                 ),
-                value=field_value if is_safe(field_value) else MISSING,
+                value=to_safe(field_value),
             )
-            if inspect.isroutine(field_value):
+            if isinstance(field_value, dict):
                 sub_object_graph.setdefault(
                     (
                         field_dependency_node.module_path,
                         field_dependency_node.local_path,
                     ),
                     set(),
-                ).add((TYPES_MODULE_PATH, FUNCTION_TYPE_LOCAL_OBJECT_PATH))
+                ).add((BUILTINS_MODULE_PATH, BUILTINS_DICT_LOCAL_OBJECT_PATH))
+            elif isinstance(field_value, frozenset):
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add(
+                    (
+                        BUILTINS_MODULE_PATH,
+                        BUILTINS_FROZENSET_LOCAL_OBJECT_PATH,
+                    )
+                )
+            elif isinstance(field_value, list):
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add((BUILTINS_MODULE_PATH, BUILTINS_LIST_LOCAL_OBJECT_PATH))
+            elif isinstance(field_value, set):
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add((BUILTINS_MODULE_PATH, BUILTINS_SET_LOCAL_OBJECT_PATH))
+            elif isinstance(field_value, tuple):
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add((BUILTINS_MODULE_PATH, BUILTINS_TUPLE_LOCAL_OBJECT_PATH))
+            elif inspect.isroutine(field_value):
+                sub_object_graph.setdefault(
+                    (
+                        field_dependency_node.module_path,
+                        field_dependency_node.local_path,
+                    ),
+                    set(),
+                ).add(
+                    (TYPES_MODULE_PATH, TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH)
+                )
             elif inspect.isclass(field_value):
                 prev_metacls = field_value
                 prev_metacls_alias_local_path = (
