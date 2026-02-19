@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import functools
 import operator
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
-from unused._core.namespace import Namespace
+from .lookup import lookup_namespace_by_expression_node
+from .namespace import Namespace
+from .object_path import BUILTINS_MODULE_PATH, LocalObjectPath, ModulePath
 
 
 @functools.singledispatch
@@ -28,11 +31,41 @@ def _(
     )
 
 
+_ALLOWED_CALLABLES: Final[
+    Mapping[tuple[ModulePath, LocalObjectPath], Callable[..., Any]]
+] = {
+    (
+        BUILTINS_MODULE_PATH,
+        LocalObjectPath.from_object_name(callable_.__qualname__),
+    ): callable_
+    for callable_ in (
+        builtins.getattr,
+        builtins.hasattr,
+        builtins.isinstance,
+        builtins.issubclass,
+        builtins.len,
+        builtins.iter,
+    )
+}
+
+
 @evaluate_node.register(ast.Call)
 def _(
     node: ast.Call, namespace: Namespace, /, *parent_namespaces: Namespace
 ) -> Any:
-    callable_ = evaluate_node(node.func, namespace, *parent_namespaces)
+    try:
+        callable_ = evaluate_node(node.func, namespace, *parent_namespaces)
+    except EVALUATION_EXCEPTIONS:
+        callable_namespace = lookup_namespace_by_expression_node(
+            node.func, namespace, *parent_namespaces
+        )
+        if callable_namespace is None:
+            raise
+        callable_ = _ALLOWED_CALLABLES.get(
+            (callable_namespace.module_path, callable_namespace.local_path)
+        )
+        if callable_ is None:
+            raise
     args: list[Any] = []
     for positional_argument_node in node.args:
         if isinstance(positional_argument_node, ast.Starred):

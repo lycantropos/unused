@@ -33,7 +33,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
         assert inspect.ismodule(module)
         module_path = ModulePath.from_module_name(module.__name__)
         module_dependency_node = DependencyNode(
-            ObjectKind.MODULE,
+            ObjectKind.STATIC_MODULE,
             module_path,
             LocalObjectPath(),
             dependant_local_path=LocalObjectPath(),
@@ -57,7 +57,9 @@ def parse_modules(*modules: types.ModuleType) -> None:
                 MODULE_NAMESPACES.setdefault(
                     submodule_path,
                     Namespace(
-                        ObjectKind.MODULE, submodule_path, LocalObjectPath()
+                        ObjectKind.STATIC_MODULE,
+                        submodule_path,
+                        LocalObjectPath(),
                     ),
                 )
         dependant_module_namespace = MODULE_NAMESPACES[
@@ -117,7 +119,8 @@ def parse_modules(*modules: types.ModuleType) -> None:
             )
         elif dependency_node.object_kind in (
             ObjectKind.CLASS,
-            ObjectKind.MODULE,
+            ObjectKind.METACLASS,
+            ObjectKind.STATIC_MODULE,
         ):
             dependant_module_namespace.set_object_by_path(
                 dependency_node.dependant_local_path,
@@ -194,7 +197,7 @@ def _collect_dependencies(
                         value_dependency_node.local_path.join(field_name)
                     )
                 submodule_dependency_node = DependencyNode(
-                    ObjectKind.MODULE,
+                    ObjectKind.STATIC_MODULE,
                     submodule_path,
                     submodule_local_path,
                     dependant_local_path=(
@@ -220,7 +223,11 @@ def _collect_dependencies(
                     ObjectKind.ROUTINE
                     if inspect.isroutine(field_value)
                     else (
-                        ObjectKind.CLASS
+                        (
+                            ObjectKind.METACLASS
+                            if issubclass(field_value, type)
+                            else ObjectKind.CLASS
+                        )
                         if inspect.isclass(field_value)
                         else ObjectKind.UNKNOWN
                     )
@@ -235,7 +242,7 @@ def _collect_dependencies(
                 ),
                 value=field_value if is_safe(field_value) else MISSING,
             )
-            if inspect.isfunction(field_value):
+            if inspect.isroutine(field_value):
                 sub_object_graph.setdefault(
                     (
                         field_dependency_node.module_path,
@@ -250,7 +257,7 @@ def _collect_dependencies(
                 )
                 while (metacls := type(prev_metacls)) is not prev_metacls:
                     metacls_alias_local_path = (
-                        prev_metacls_alias_local_path.join('__type__')
+                        prev_metacls_alias_local_path.join('__class__')
                     )
                     metacls_module_path = ModulePath.from_module_name(
                         metacls.__module__
@@ -259,7 +266,7 @@ def _collect_dependencies(
                         metacls.__qualname__
                     )
                     metacls_dependency_node = DependencyNode(
-                        ObjectKind.CLASS,
+                        ObjectKind.METACLASS,
                         metacls_module_path,
                         metacls_local_path,
                         dependant_local_path=metacls_local_path,
@@ -277,7 +284,7 @@ def _collect_dependencies(
                         set(),
                     ).add((metacls_module_path, metacls_local_path))
                     metacls_module_dependency_node = DependencyNode(
-                        ObjectKind.MODULE,
+                        ObjectKind.STATIC_MODULE,
                         metacls_dependency_node.module_path,
                         LocalObjectPath(),
                         dependant_local_path=LocalObjectPath(),
@@ -302,7 +309,7 @@ def _collect_dependencies(
                     )
                     prev_metacls = metacls
                     prev_metacls_alias_local_path = metacls_alias_local_path
-                for base_cls in field_value.__mro__[1:-1]:
+                for base_cls in field_value.__mro__[1:-1]:  # pyright: ignore[reportIndexIssue]
                     base_cls_module_path = ModulePath.from_module_name(
                         base_cls.__module__
                     )
@@ -318,7 +325,7 @@ def _collect_dependencies(
                         value=MISSING,
                     )
                     base_cls_module_dependency_node = DependencyNode(
-                        ObjectKind.MODULE,
+                        ObjectKind.STATIC_MODULE,
                         base_cls_dependency_node.module_path,
                         LocalObjectPath(),
                         dependant_local_path=LocalObjectPath(),

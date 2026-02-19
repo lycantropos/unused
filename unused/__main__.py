@@ -172,13 +172,19 @@ def main() -> None:
             )
         paths = [path.resolve(strict=True) for path in unchecked_paths]
 
+    import ast
+
     from unused._core.namespace_parser import (
         load_module_file_paths,
         resolve_module_path,
     )
-    from unused._core.object_path import ModulePath
+    from unused._core.object_path import LocalObjectPath, ModulePath
 
     module_file_paths = load_module_file_paths(root_path)
+    function_definition_nodes: dict[
+        tuple[ModulePath, LocalObjectPath],
+        ast.AsyncFunctionDef | ast.FunctionDef,
+    ] = {}
 
     stderr, stdout = sys.stderr, sys.stdout
     for module_file_path in chain.from_iterable(
@@ -214,8 +220,8 @@ def main() -> None:
         try:
             resolve_module_path(
                 module_path,
+                function_definition_nodes=function_definition_nodes,
                 module_file_paths=module_file_paths,
-                module_paths=(),
             )
         except Exception as error:
             stderr.write(f'Failed loading {module_path.to_module_name()!r}:\n')

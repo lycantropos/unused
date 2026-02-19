@@ -1,295 +1,179 @@
+from __future__ import annotations
+
 import ast
 import functools
+from collections.abc import Sequence
+from typing import TypeAlias
+
+from typing_extensions import Self
 
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_node
-from .module_namespaces import BUILTINS_MODULE_NAMESPACE
+from .lookup import (
+    lookup_namespace_by_expression_node,
+    lookup_namespace_by_object_name,
+)
 from .namespace import Namespace, ObjectKind
 from .object_path import (
     BUILTINS_MODULE_PATH,
-    COLLECTIONS_MODULE_PATH,
     GLOBALS_LOCAL_OBJECT_PATH,
     LocalObjectPath,
     ModulePath,
-    NAMED_TUPLE_LOCAL_OBJECT_PATH,
+)
+
+
+class ResolvedAssignmentTargetSplitPath:
+    @property
+    def absolute(self, /) -> LocalObjectPath:
+        return self._absolute
+
+    @property
+    def module(self, /) -> ModulePath:
+        return self._module
+
+    @property
+    def relative(self, /) -> LocalObjectPath:
+        return self._relative
+
+    def join(self, /, *components: str) -> Self:
+        return type(self)(
+            self._module, self._absolute, self._relative.join(*components)
+        )
+
+    def combine_local(self, /) -> LocalObjectPath:
+        return self._absolute.join(*self._relative.components)
+
+    _absolute: LocalObjectPath
+    _module: ModulePath
+    _relative: LocalObjectPath
+
+    __slots__ = '_absolute', '_module', '_relative'
+
+    def __new__(
+        cls,
+        module: ModulePath,
+        absolute: LocalObjectPath,
+        relative: LocalObjectPath,
+    ) -> Self:
+        assert isinstance(absolute, LocalObjectPath), absolute
+        assert isinstance(relative, LocalObjectPath), relative
+        self = super().__new__(cls)
+        self._absolute, self._module, self._relative = (
+            absolute,
+            module,
+            relative,
+        )
+        return self
+
+    def __repr__(self, /) -> str:
+        return (
+            f'{type(self).__qualname__}'
+            f'({self._module!r}, {self._absolute!r}, {self._relative!r})'
+        )
+
+
+ResolvedAssignmentTarget: TypeAlias = (
+    Sequence['ResolvedAssignmentTarget']
+    | ResolvedAssignmentTargetSplitPath
+    | None
 )
 
 
 @functools.singledispatch
-def lookup_node(
+def resolve_assignment_target(
     _node: ast.expr, _namespace: Namespace, /, *_parent_namespaces: Namespace
-) -> Namespace | None:
+) -> ResolvedAssignmentTarget:
     return None
 
 
-@lookup_node.register(ast.Attribute)
+@resolve_assignment_target.register(ast.Attribute)
 def _(
     node: ast.Attribute, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace | None:
-    object_namespace = lookup_node(node.value, namespace, *parent_namespaces)
-    return (
-        None
-        if object_namespace is None
-        else object_namespace.get_namespace_by_name(node.attr)
-    )
-
-
-@lookup_node.register(ast.Call)
-def _(
-    node: ast.Call, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace | None:
-    callable_namespace = lookup_node(node.func, namespace, *parent_namespaces)
-    if callable_namespace is None:
-        return None
-    if callable_namespace.kind is ObjectKind.CLASS:
-        return Namespace(
-            ObjectKind.INSTANCE,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-            callable_namespace,
-        )
-    if callable_namespace.kind is ObjectKind.ROUTINE:
-        return Namespace(
-            ObjectKind.ROUTINE_CALL,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-        )
-    return None
-
-
-@lookup_node.register(ast.Name)
-def _(
-    node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace | None:
-    return _resolve_object_name(node.id, namespace, *parent_namespaces)
-
-
-@lookup_node.register(ast.NamedExpr)
-def _(
-    node: ast.NamedExpr, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace | None:
-    return lookup_node(node.value, namespace, *parent_namespaces)
-
-
-@functools.singledispatch
-def resolve_node(
-    _node: ast.expr,
-    _namespace: Namespace,
-    /,
-    *_parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-
-
-@resolve_node.register(ast.Attribute)
-def _(
-    node: ast.Attribute,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
+) -> ResolvedAssignmentTarget:
     if (
-        object_namespace := lookup_node(
+        object_path := resolve_assignment_target(
             node.value, namespace, *parent_namespaces
         )
     ) is not None:
-        attribute_name = node.attr
-        try:
-            return object_namespace.get_namespace_by_name(attribute_name)
-        except KeyError:
-            raise AttributeError(attribute_name) from None
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+        assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
+        return object_path.join(node.attr)
+    return None
 
 
-@resolve_node.register(ast.Call)
+@resolve_assignment_target.register(ast.List)
+@resolve_assignment_target.register(ast.Tuple)
 def _(
-    node: ast.Call,
+    node: ast.List | ast.Tuple,
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    callable_namespace = lookup_node(node.func, namespace, *parent_namespaces)
-    if callable_namespace is None:
-        return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-    if callable_namespace.kind is ObjectKind.CLASS:
-        return Namespace(
-            ObjectKind.INSTANCE,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-            callable_namespace,
+) -> ResolvedAssignmentTarget:
+    return [
+        resolve_assignment_target(element_node, namespace, *parent_namespaces)
+        for element_node in node.elts
+    ]
+
+
+@resolve_assignment_target.register(ast.Name)
+def _(
+    node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> ResolvedAssignmentTarget:
+    object_name = node.id
+    if isinstance(node.ctx, ast.Load):
+        object_namespace = lookup_namespace_by_object_name(
+            object_name, namespace, *parent_namespaces
         )
-    if (
-        callable_namespace.module_path == BUILTINS_MODULE_PATH
-        and callable_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
-    ):
-        return Namespace(
-            ObjectKind.ROUTINE_CALL,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-        )
-    if (callable_namespace.module_path == COLLECTIONS_MODULE_PATH) and (
-        callable_namespace.local_path == NAMED_TUPLE_LOCAL_OBJECT_PATH
-    ):
-        _, namedtuple_field_name_node = node.args
-        try:
-            named_tuple_field_names = evaluate_node(
-                namedtuple_field_name_node, namespace, *parent_namespaces
-            )
-        except EVALUATION_EXCEPTIONS:
-            return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-        if isinstance(named_tuple_field_names, str):
-            named_tuple_field_names = named_tuple_field_names.replace(
-                ',', ' '
-            ).split()
-        assert isinstance(named_tuple_field_names, tuple | list), ast.unparse(
-            node
-        )
-        named_tuple_namespace = Namespace(
-            ObjectKind.CLASS,
-            module_path,
-            local_path,
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-                LocalObjectPath.from_object_name(tuple.__qualname__)
-            ),
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-                LocalObjectPath.from_object_name(object.__qualname__)
-            ),
-        )
-        for field_name in named_tuple_field_names:
-            named_tuple_namespace.set_namespace_by_name(
-                field_name,
-                Namespace(
-                    ObjectKind.UNKNOWN,
-                    named_tuple_namespace.module_path,
-                    named_tuple_namespace.local_path.join(field_name),
+        if (
+            object_namespace.module_path == namespace.module_path
+            and object_namespace.local_path.starts_with(namespace.local_path)
+        ):
+            return ResolvedAssignmentTargetSplitPath(
+                namespace.module_path,
+                namespace.local_path,
+                LocalObjectPath(
+                    *object_namespace.local_path.components[
+                        len(namespace.local_path.components) :
+                    ]
                 ),
             )
-        return named_tuple_namespace
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-
-
-@resolve_node.register(ast.Dict)
-@resolve_node.register(ast.DictComp)
-def _(
-    _node: ast.Dict | ast.DictComp,
-    _namespace: Namespace,
-    /,
-    *_parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
-        ObjectKind.INSTANCE,
-        module_path,
-        local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-            LocalObjectPath.from_object_name(dict.__qualname__)
-        ),
+        return ResolvedAssignmentTargetSplitPath(
+            object_namespace.module_path,
+            object_namespace.local_path,
+            LocalObjectPath(),
+        )
+    return ResolvedAssignmentTargetSplitPath(
+        namespace.module_path,
+        namespace.local_path,
+        LocalObjectPath(object_name),
     )
 
 
-@resolve_node.register(ast.List)
-@resolve_node.register(ast.ListComp)
+@resolve_assignment_target.register(ast.NamedExpr)
 def _(
-    _node: ast.List | ast.ListComp,
-    _namespace: Namespace,
-    /,
-    *_parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
-        ObjectKind.INSTANCE,
-        module_path,
-        local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-            LocalObjectPath.from_object_name(list.__qualname__)
-        ),
+    node: ast.NamedExpr, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> ResolvedAssignmentTarget:
+    return resolve_assignment_target(node.value, namespace, *parent_namespaces)
+
+
+@resolve_assignment_target.register(ast.Subscript)
+def _(
+    node: ast.Subscript, namespace: Namespace, /, *parent_namespaces: Namespace
+) -> ResolvedAssignmentTarget:
+    value_namespace = lookup_namespace_by_expression_node(
+        node.value, namespace, *parent_namespaces
     )
-
-
-@resolve_node.register(ast.Name)
-def _(
-    node: ast.Name,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    local_path: LocalObjectPath,  # noqa: ARG001
-    module_path: ModulePath,  # noqa: ARG001
-) -> Namespace:
-    return _resolve_object_name(node.id, namespace, *parent_namespaces)
-
-
-@resolve_node.register(ast.NamedExpr)
-def _(
-    node: ast.NamedExpr,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return (
-        result
-        if (result := lookup_node(node.value, namespace, *parent_namespaces))
-        is not None
-        else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-    )
-
-
-@resolve_node.register(ast.Set)
-@resolve_node.register(ast.SetComp)
-def _(
-    _node: ast.Set | ast.SetComp,
-    _namespace: Namespace,
-    /,
-    *_parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
-        ObjectKind.INSTANCE,
-        module_path,
-        local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-            LocalObjectPath.from_object_name(set.__qualname__)
-        ),
-    )
-
-
-@resolve_node.register(ast.Tuple)
-def _(
-    _node: ast.Tuple,
-    _namespace: Namespace,
-    /,
-    *_parent_namespaces: Namespace,
-    local_path: LocalObjectPath,
-    module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
-        ObjectKind.INSTANCE,
-        module_path,
-        local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
-            LocalObjectPath.from_object_name(tuple.__qualname__)
-        ),
-    )
-
-
-def _resolve_object_name(
-    name: str, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace:
+    if value_namespace is None:
+        return None
+    if not (
+        value_namespace.kind is ObjectKind.ROUTINE_CALL
+        and value_namespace.module_path == BUILTINS_MODULE_PATH
+        and value_namespace.local_path == GLOBALS_LOCAL_OBJECT_PATH
+    ):
+        return None
     try:
-        return namespace.get_namespace_by_name(name)
-    except KeyError:
-        for parent_namespace in parent_namespaces:
-            try:
-                return parent_namespace.get_namespace_by_name(name)
-            except KeyError:
-                continue
-        raise NameError(name) from None
+        slice_value = evaluate_node(node.slice, namespace, *parent_namespaces)
+    except EVALUATION_EXCEPTIONS:
+        return None
+    assert isinstance(slice_value, str), ast.unparse(node)
+    return ResolvedAssignmentTargetSplitPath(
+        namespace.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
+    )

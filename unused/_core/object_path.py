@@ -92,6 +92,11 @@ class LocalObjectPath:
     def components(self, /) -> Sequence[str]:
         return self._components
 
+    @property
+    def parent(self, /) -> Self:
+        assert len(self._components) > 0, self
+        return type(self)(*self._components[:-1])
+
     def starts_with(self, other: Self, /) -> bool:
         return (
             len(other._components) <= len(self._components)  # noqa: SLF001
@@ -184,4 +189,13 @@ assert (
         builtins.getattr, NAMED_TUPLE_LOCAL_OBJECT_PATH.components, collections
     )
     is collections.namedtuple  # type: ignore[comparison-overlap]
+)
+TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+    LocalObjectPath.from_object_name(builtins.type.__qualname__)
+)
+assert (
+    functools.reduce(
+        builtins.getattr, TYPE_LOCAL_OBJECT_PATH.components, builtins
+    )
+    is builtins.type  # type: ignore[comparison-overlap]
 )

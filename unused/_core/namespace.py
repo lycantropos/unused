@@ -2,27 +2,31 @@ from __future__ import annotations
 
 import functools
 from enum import Enum
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 from typing_extensions import Self
 
 from .attribute_mapping import AttributeMapping
 from .mapping_chain import MappingChain
-from .missing import MISSING, Missing
+from .missing import MISSING
 from .object_path import LocalObjectPath, ModulePath
 
 
 class ObjectKind(str, Enum):
     BUILTIN_MODULE = 'BUILTIN_MODULE'
     CLASS = 'CLASS'
+    DYNAMIC_MODULE = 'DYNAMIC_MODULE'
     EXTENSION_MODULE = 'EXTENSION_MODULE'
+    FUNCTION_SCOPE = 'FUNCTION_SCOPE'
     INSTANCE = 'INSTANCE'
-    MODULE = 'MODULE'
-    OBJECT = 'OBJECT'
+    INSTANCE_ROUTINE = 'INSTANCE_ROUTINE'
+    METACLASS = 'METACLASS'
     PROPERTY = 'PROPERTY'
     ROUTINE = 'ROUTINE'
     ROUTINE_CALL = 'ROUTINE_CALL'
+    STATIC_MODULE = 'STATIC_MODULE'
     UNKNOWN = 'UNKNOWN'
+    UNKNOWN_CLASS = 'UNKNOWN_CLASS'
 
     def __repr__(self, /) -> str:
         return f'{type(self).__qualname__}.{self.name}'
@@ -49,10 +53,13 @@ class Namespace:
             ObjectKind.CLASS,
             ObjectKind.INSTANCE,
             ObjectKind.BUILTIN_MODULE,
+            ObjectKind.DYNAMIC_MODULE,
             ObjectKind.EXTENSION_MODULE,
-            ObjectKind.MODULE,
+            ObjectKind.METACLASS,
             ObjectKind.ROUTINE,
+            ObjectKind.STATIC_MODULE,
             ObjectKind.UNKNOWN,
+            ObjectKind.UNKNOWN_CLASS,
         ), (self, sub_namespace)
         assert self.kind is not ObjectKind.UNKNOWN, (self, sub_namespace)
         assert isinstance(sub_namespace, Namespace), (self, sub_namespace)
@@ -71,29 +78,52 @@ class Namespace:
             )
         )
 
-    @overload
-    def get_namespace_by_name(
-        self, name: str, /, *, default: Missing = ...
-    ) -> Self: ...
+    def get_namespace_by_path(self, local_path: LocalObjectPath, /) -> Self:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        return functools.reduce(
+            type(self).get_namespace_by_name, local_path.components, self
+        )
 
-    @overload
-    def get_namespace_by_name(
+    def get_object_by_name(self, name: str, /) -> Any:
+        assert isinstance(name, str), name
+        return self._objects[name]
+
+    def get_object_by_name_or_else(
         self, name: str, /, *, default: _T
-    ) -> Self | _T: ...
+    ) -> Any | _T:
+        assert isinstance(name, str), name
+        return self._objects.get(name, default)
 
-    def get_namespace_by_name(
-        self, name: str, /, *, default: Missing | _T = MISSING
-    ) -> Self | _T:
+    def get_namespace_by_name(self, name: str, /) -> Self:
         try:
-            return self._children[name]
+            candidate = self._children[name]
         except KeyError:
             for sub_namespace in self._sub_namespaces:
                 try:
-                    return sub_namespace.get_namespace_by_name(name)
+                    candidate = sub_namespace.get_namespace_by_name(name)
                 except KeyError:
                     continue
+                else:
+                    if candidate.kind is ObjectKind.ROUTINE and (
+                        (
+                            self._kind is ObjectKind.CLASS
+                            and sub_namespace.kind is ObjectKind.METACLASS
+                        )
+                        or (
+                            self._kind is ObjectKind.INSTANCE
+                            and sub_namespace.kind is ObjectKind.CLASS
+                        )
+                    ):
+                        candidate = type(self)(
+                            ObjectKind.INSTANCE_ROUTINE,
+                            self._module_path,
+                            self._local_path.join(name),
+                            candidate,
+                        )
+                    return candidate
             if self.kind in (
                 ObjectKind.BUILTIN_MODULE,
+                ObjectKind.DYNAMIC_MODULE,
                 ObjectKind.EXTENSION_MODULE,
                 ObjectKind.ROUTINE_CALL,
                 ObjectKind.INSTANCE,
@@ -107,19 +137,35 @@ class Namespace:
                     self.local_path.join(name),
                 )
                 return result
-            if default is MISSING:
-                raise
-            return default
+            raise
+        else:
+            if (
+                self._kind is ObjectKind.CLASS
+                and candidate.kind is ObjectKind.ROUTINE
+                and (
+                    name
+                    in (
+                        object.__init_subclass__.__name__,
+                        object.__new__.__name__,
+                    )
+                )
+            ):
+                candidate = type(self)(
+                    ObjectKind.INSTANCE_ROUTINE,
+                    self._module_path,
+                    self._local_path.join(name),
+                    candidate,
+                )
+            return candidate
 
-    def get_namespace_by_path(self, local_path: LocalObjectPath, /) -> Self:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        return functools.reduce(
-            type(self).get_namespace_by_name, local_path.components, self
-        )
+    def mark_module_as_dynamic(self, /) -> None:
+        assert self._kind is ObjectKind.STATIC_MODULE
+        self._kind = ObjectKind.DYNAMIC_MODULE
 
-    def get_object_by_name(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._objects[name]
+    def instance_routine_to_routine(self, /) -> Self:
+        assert self._kind is ObjectKind.INSTANCE_ROUTINE
+        (result,) = self._sub_namespaces
+        return result
 
     def set_namespace_by_name(self, name: str, value: Self, /) -> None:
         assert isinstance(name, str), (name, value)
@@ -158,6 +204,17 @@ class Namespace:
                 )
             namespace = namespace.get_namespace_by_name(component)
         namespace._objects[local_path.components[-1]] = value  # noqa: SLF001
+
+    def strict_get_namespace_by_name(self, name: str, /) -> Self:
+        try:
+            return self._children[name]
+        except KeyError:
+            for sub_namespace in self._sub_namespaces:
+                try:
+                    return sub_namespace.strict_get_namespace_by_name(name)
+                except KeyError:
+                    continue
+            raise
 
     _children: dict[str, Self]
     _kind: ObjectKind
