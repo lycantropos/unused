@@ -145,7 +145,7 @@ def _does_function_modify_global_state(
         for positional_argument, positional_parameter_node in zip(
             positional_arguments,
             positional_parameter_nodes[: len(positional_arguments)],
-            strict=True,
+            strict=False,
         ):
             positional_parameter_name = positional_parameter_node.arg
             function_scope_namespace.set_namespace_by_name(
