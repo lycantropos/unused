@@ -4,6 +4,7 @@ import ast
 import builtins
 import functools
 
+from .context import Context
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import (
     lookup_namespace_by_expression_node,
@@ -29,6 +30,7 @@ def construct_namespace_from_expression_node(
     _namespace: Namespace,
     /,
     *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
@@ -41,12 +43,13 @@ def _(
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
     if (
         object_namespace := lookup_namespace_by_expression_node(
-            node.value, namespace, *parent_namespaces
+            node.value, namespace, *parent_namespaces, context=context
         )
     ) is not None:
         attribute_name = node.attr
@@ -63,11 +66,12 @@ def _(
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
     callable_namespace = lookup_namespace_by_expression_node(
-        node.func, namespace, *parent_namespaces
+        node.func, namespace, *parent_namespaces, context=context
     )
     if callable_namespace is None:
         return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
@@ -75,7 +79,7 @@ def _(
         callable_namespace.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
         first_argument_namespace = lookup_namespace_by_expression_node(
-            node.args[0], namespace, *parent_namespaces
+            node.args[0], namespace, *parent_namespaces, context=context
         )
         return (
             Namespace(
@@ -137,7 +141,7 @@ def _(
     ):
         (argument_node,) = node.args
         argument_namespace = lookup_namespace_by_expression_node(
-            argument_node, namespace, *parent_namespaces
+            argument_node, namespace, *parent_namespaces, context=context
         )
         assert argument_namespace is not None
         return argument_namespace.get_namespace_by_name(DICT_FIELD_NAME)
@@ -148,7 +152,10 @@ def _(
         _, namedtuple_field_name_node = node.args
         try:
             named_tuple_field_names = evaluate_expression_node(
-                namedtuple_field_name_node, namespace, *parent_namespaces
+                namedtuple_field_name_node,
+                namespace,
+                *parent_namespaces,
+                context=context,
             )
         except EVALUATION_EXCEPTIONS:
             return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
@@ -190,6 +197,7 @@ def _(
     _namespace: Namespace,
     /,
     *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
@@ -210,6 +218,7 @@ def _(
     _namespace: Namespace,
     /,
     *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
@@ -229,6 +238,7 @@ def _(
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,  # noqa: ARG001
     module_path: ModulePath,  # noqa: ARG001
 ) -> Namespace:
@@ -243,6 +253,7 @@ def _(
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
@@ -250,7 +261,7 @@ def _(
         result
         if (
             result := lookup_namespace_by_expression_node(
-                node.value, namespace, *parent_namespaces
+                node.value, namespace, *parent_namespaces, context=context
             )
         )
         is not None
@@ -265,6 +276,7 @@ def _(
     _namespace: Namespace,
     /,
     *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:
@@ -284,6 +296,7 @@ def _(
     _namespace: Namespace,
     /,
     *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Namespace:

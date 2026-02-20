@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,10 @@ class AttributeMapping:
         self = super().__new__(cls)
         self._wrapped = wrapped
         return self
+
+    @property
+    def __dict__(self, /) -> Mapping[str, Any]:  # type: ignore[override]
+        return types.MappingProxyType(self._wrapped)
 
     @property
     def __module__(self, /) -> str:  # type: ignore[override]

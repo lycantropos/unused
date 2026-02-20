@@ -8,6 +8,8 @@ from typing import Any, TypeAlias
 
 from typing_extensions import Self
 
+from unused._core.context import Context
+
 from .attribute_mapping import AttributeMapping
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import (
@@ -95,18 +97,26 @@ def combine_resolved_assignment_target_with_value(
 
 @functools.singledispatch
 def resolve_assignment_target(
-    _node: ast.expr, _namespace: Namespace, /, *_parent_namespaces: Namespace
+    _node: ast.expr,
+    _namespace: Namespace,
+    /,
+    *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     return None
 
 
 @resolve_assignment_target.register(ast.Attribute)
 def _(
-    node: ast.Attribute, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Attribute,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> ResolvedAssignmentTarget:
     if (
         object_path := resolve_assignment_target(
-            node.value, namespace, *parent_namespaces
+            node.value, namespace, *parent_namespaces, context=context
         )
     ) is not None:
         assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
@@ -121,16 +131,23 @@ def _(
     namespace: Namespace,
     /,
     *parent_namespaces: Namespace,
+    context: Context,
 ) -> ResolvedAssignmentTarget:
     return [
-        resolve_assignment_target(element_node, namespace, *parent_namespaces)
+        resolve_assignment_target(
+            element_node, namespace, *parent_namespaces, context=context
+        )
         for element_node in node.elts
     ]
 
 
 @resolve_assignment_target.register(ast.Name)
 def _(
-    node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Name,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     object_name = node.id
     if isinstance(node.ctx, ast.Load):
@@ -162,19 +179,16 @@ def _(
     )
 
 
-@resolve_assignment_target.register(ast.NamedExpr)
-def _(
-    node: ast.NamedExpr, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> ResolvedAssignmentTarget:
-    return resolve_assignment_target(node.value, namespace, *parent_namespaces)
-
-
 @resolve_assignment_target.register(ast.Subscript)
 def _(
-    node: ast.Subscript, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Subscript,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> ResolvedAssignmentTarget:
     value_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces
+        node.value, namespace, *parent_namespaces, context=context
     )
     if value_namespace is None:
         return None
@@ -186,7 +200,7 @@ def _(
         return None
     try:
         slice_value = evaluate_expression_node(
-            node.slice, namespace, *parent_namespaces
+            node.slice, namespace, *parent_namespaces, context=context
         )
     except EVALUATION_EXCEPTIONS:
         return None

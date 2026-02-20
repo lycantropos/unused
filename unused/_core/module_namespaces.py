@@ -23,7 +23,7 @@ from .object_path import (
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
     TYPES_MODULE_PATH,
 )
-from .safety import to_safe
+from .safety import is_safe
 
 MODULE_NAMESPACES: Final[dict[ModulePath, Namespace]] = {}
 
@@ -252,7 +252,7 @@ def _collect_dependencies(
                 dependant_module_path=(
                     value_dependency_node.dependant_module_path
                 ),
-                value=to_safe(field_value),
+                value=field_value if is_safe(field_value) else MISSING,
             )
             if isinstance(field_value, dict):
                 sub_object_graph.setdefault(
@@ -433,3 +433,27 @@ BUILTINS_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[
     BUILTINS_MODULE_PATH
 ]
 TYPES_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[TYPES_MODULE_PATH]
+
+
+def _setup_builtin_classes() -> None:
+    for cls in [
+        builtins.bool,
+        builtins.bytearray,
+        builtins.bytes,
+        builtins.dict,
+        builtins.float,
+        builtins.frozenset,
+        builtins.int,
+        builtins.list,
+        builtins.set,
+        builtins.str,
+        builtins.tuple,
+        builtins.type,
+    ]:
+        assert inspect.isclass(cls), cls
+        BUILTINS_MODULE_NAMESPACE.set_object_by_path(
+            LocalObjectPath.from_object_name(cls.__qualname__), cls
+        )
+
+
+_setup_builtin_classes()

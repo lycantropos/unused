@@ -78,6 +78,10 @@ class Namespace:
             )
         )
 
+    def delete_namespace_by_name(self, name: str, /) -> None:
+        assert isinstance(name, str), name
+        del self._children[name]
+
     def get_namespace_by_path(self, local_path: LocalObjectPath, /) -> Self:
         assert isinstance(local_path, LocalObjectPath), local_path
         return functools.reduce(

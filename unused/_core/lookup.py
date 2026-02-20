@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import functools
 
+from .context import Context, FunctionCallContext
 from .module_namespaces import MODULE_NAMESPACES
 from .namespace import Namespace, ObjectKind
 from .object_path import (
@@ -17,18 +18,26 @@ from .object_path import (
 
 @functools.singledispatch
 def lookup_namespace_by_expression_node(
-    _node: ast.expr, _namespace: Namespace, /, *_parent_namespaces: Namespace
+    _node: ast.expr,
+    _namespace: Namespace,
+    /,
+    *_parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
 ) -> Namespace | None:
     return None
 
 
 @lookup_namespace_by_expression_node.register(ast.Attribute)
 def _(
-    node: ast.Attribute, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Attribute,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> Namespace | None:
     assert isinstance(node.ctx, ast.Load), ast.unparse(node)
     object_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces
+        node.value, namespace, *parent_namespaces, context=context
     )
     if object_namespace is None:
         return None
@@ -41,10 +50,14 @@ def _(
 
 @lookup_namespace_by_expression_node.register(ast.Call)
 def _(
-    node: ast.Call, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Call,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> Namespace | None:
     callable_namespace = lookup_namespace_by_expression_node(
-        node.func, namespace, *parent_namespaces
+        node.func, namespace, *parent_namespaces, context=context
     )
     if callable_namespace is None:
         return None
@@ -80,7 +93,11 @@ def _(
 
 @lookup_namespace_by_expression_node.register(ast.Name)
 def _(
-    node: ast.Name, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Name,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,  # noqa: ARG001
 ) -> Namespace | None:
     assert isinstance(node.ctx, ast.Load)
     return lookup_namespace_by_object_name(
@@ -90,21 +107,29 @@ def _(
 
 @lookup_namespace_by_expression_node.register(ast.NamedExpr)
 def _(
-    node: ast.NamedExpr, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.NamedExpr,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> Namespace | None:
     return lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces
+        node.value, namespace, *parent_namespaces, context=context
     )
 
 
 @lookup_namespace_by_expression_node.register(ast.Subscript)
 def _(
-    node: ast.Subscript, namespace: Namespace, /, *parent_namespaces: Namespace
+    node: ast.Subscript,
+    namespace: Namespace,
+    /,
+    *parent_namespaces: Namespace,
+    context: Context,
 ) -> Namespace | None:
     from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 
     value_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces
+        node.value, namespace, *parent_namespaces, context=context
     )
     if value_namespace is None:
         return None
@@ -115,11 +140,12 @@ def _(
     ):
         try:
             module_name = evaluate_expression_node(
-                node.slice, namespace, *parent_namespaces
+                node.slice, namespace, *parent_namespaces, context=context
             )
         except EVALUATION_EXCEPTIONS:
-            # assume that namespace is affected
-            return MODULE_NAMESPACES[namespace.module_path]
+            if isinstance(context, FunctionCallContext):
+                # assume that caller namespace is affected
+                return MODULE_NAMESPACES[context.caller_module_path]
         else:
             assert isinstance(module_name, str), module_name
             return MODULE_NAMESPACES[ModulePath.from_module_name(module_name)]

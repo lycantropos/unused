@@ -4,6 +4,7 @@ import subprocess
 import sys
 import traceback
 from abc import ABC, abstractmethod
+from functools import reduce
 from importlib.machinery import EXTENSION_SUFFIXES, SOURCE_SUFFIXES
 from itertools import chain
 from pathlib import Path
@@ -199,9 +200,18 @@ def main() -> None:
             module_path = ModulePath(
                 *module_file_path.relative_to(root_path).parent.parts,
                 *(
-                    ()
-                    if module_file_path.stem == '__init__'
-                    else (module_file_path.stem,)
+                    (module_name,)
+                    if (
+                        (
+                            module_name := reduce(
+                                str.removesuffix,
+                                _MODULE_SUFFIXES,
+                                module_file_path.name,
+                            )
+                        )
+                        != '__init__'
+                    )
+                    else ()
                 ),
             )
         except ValueError as error:
