@@ -6,7 +6,7 @@ from typing import Any
 from typing_extensions import Self
 
 from .missing import Missing
-from .namespace import ObjectKind
+from .object_ import ObjectKind
 from .object_path import LocalObjectPath, ModulePath
 
 

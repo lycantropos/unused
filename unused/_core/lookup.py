@@ -4,8 +4,8 @@ import ast
 import functools
 
 from .context import Context, FunctionCallContext
-from .module_namespaces import MODULE_NAMESPACES
-from .namespace import Namespace, ObjectKind
+from .modules import MODULES
+from .object_ import Object, ObjectKind, PlainObject, Scope
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -17,158 +17,150 @@ from .object_path import (
 
 
 @functools.singledispatch
-def lookup_namespace_by_expression_node(
+def lookup_object_by_expression_node(
     _node: ast.expr,
-    _namespace: Namespace,
+    _scope: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
-) -> Namespace | None:
+) -> Object | None:
     return None
 
 
-@lookup_namespace_by_expression_node.register(ast.Attribute)
+@lookup_object_by_expression_node.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
-) -> Namespace | None:
+) -> Object | None:
     assert isinstance(node.ctx, ast.Load), ast.unparse(node)
-    object_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces, context=context
+    value_object = lookup_object_by_expression_node(
+        node.value, scope, *parent_scopes, context=context
     )
-    if object_namespace is None:
+    if value_object is None:
         return None
     attribute_name = node.attr
     try:
-        return object_namespace.get_namespace_by_name(attribute_name)
+        return value_object.get_attribute(attribute_name)
     except KeyError:
         raise AttributeError(attribute_name) from None
 
 
-@lookup_namespace_by_expression_node.register(ast.Call)
+@lookup_object_by_expression_node.register(ast.Call)
 def _(
-    node: ast.Call,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
-) -> Namespace | None:
-    callable_namespace = lookup_namespace_by_expression_node(
-        node.func, namespace, *parent_namespaces, context=context
+    node: ast.Call, scope: Scope, /, *parent_scopes: Scope, context: Context
+) -> Object | None:
+    callable_object = lookup_object_by_expression_node(
+        node.func, scope, *parent_scopes, context=context
     )
-    if callable_namespace is None:
+    if callable_object is None:
         return None
     if (
-        callable_namespace.module_path == BUILTINS_MODULE_PATH
-        and callable_namespace.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
+        callable_object.module_path == BUILTINS_MODULE_PATH
+        and callable_object.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
-        return MODULE_NAMESPACES[namespace.module_path].get_namespace_by_name(
-            DICT_FIELD_NAME
-        )
-    if callable_namespace.kind is ObjectKind.CLASS:
-        return Namespace(
+        return MODULES[scope.module_path].get_attribute(DICT_FIELD_NAME)
+    if callable_object.kind is ObjectKind.CLASS:
+        return PlainObject(
             ObjectKind.INSTANCE,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-            callable_namespace,
+            callable_object.module_path,
+            callable_object.local_path,
+            callable_object,
         )
-    if callable_namespace.kind is ObjectKind.METACLASS:
-        return Namespace(
+    if callable_object.kind is ObjectKind.METACLASS:
+        return PlainObject(
             ObjectKind.CLASS,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
-            callable_namespace,
+            callable_object.module_path,
+            callable_object.local_path,
+            callable_object,
         )
-    if callable_namespace.kind is ObjectKind.ROUTINE:
-        return Namespace(
+    if callable_object.kind is ObjectKind.ROUTINE:
+        return PlainObject(
             ObjectKind.ROUTINE_CALL,
-            callable_namespace.module_path,
-            callable_namespace.local_path,
+            callable_object.module_path,
+            callable_object.local_path,
         )
     return None
 
 
-@lookup_namespace_by_expression_node.register(ast.Name)
+@lookup_object_by_expression_node.register(ast.Name)
 def _(
     node: ast.Name,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
-) -> Namespace | None:
+) -> Object | None:
     assert isinstance(node.ctx, ast.Load)
-    return lookup_namespace_by_object_name(
-        node.id, namespace, *parent_namespaces
-    )
+    return lookup_object_by_name(node.id, scope, *parent_scopes)
 
 
-@lookup_namespace_by_expression_node.register(ast.NamedExpr)
+@lookup_object_by_expression_node.register(ast.NamedExpr)
 def _(
     node: ast.NamedExpr,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
-) -> Namespace | None:
-    return lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces, context=context
+) -> Object | None:
+    return lookup_object_by_expression_node(
+        node.value, scope, *parent_scopes, context=context
     )
 
 
-@lookup_namespace_by_expression_node.register(ast.Subscript)
+@lookup_object_by_expression_node.register(ast.Subscript)
 def _(
     node: ast.Subscript,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
-) -> Namespace | None:
+) -> Object | None:
     from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 
-    value_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces, context=context
+    value_object = lookup_object_by_expression_node(
+        node.value, scope, *parent_scopes, context=context
     )
-    if value_namespace is None:
+    if value_object is None:
         return None
     if (
-        value_namespace.kind is ObjectKind.INSTANCE
-        and value_namespace.module_path == SYS_MODULE_PATH
-        and value_namespace.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
+        value_object.kind is ObjectKind.INSTANCE
+        and value_object.module_path == SYS_MODULE_PATH
+        and value_object.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
     ):
         try:
             module_name = evaluate_expression_node(
-                node.slice, namespace, *parent_namespaces, context=context
+                node.slice, scope, *parent_scopes, context=context
             )
         except EVALUATION_EXCEPTIONS:
             if isinstance(context, FunctionCallContext):
-                # assume that caller namespace is affected
-                return MODULE_NAMESPACES[context.caller_module_path]
+                # assume that caller module is affected
+                return MODULES[context.caller_module_path]
         else:
             assert isinstance(module_name, str), module_name
-            return MODULE_NAMESPACES[ModulePath.from_module_name(module_name)]
+            return MODULES[ModulePath.from_module_name(module_name)]
     return None
 
 
-def lookup_namespace_by_object_name(
-    name: str, namespace: Namespace, /, *parent_namespaces: Namespace
-) -> Namespace:
+def lookup_object_by_name(
+    name: str, scope: Scope, /, *parent_scopes: Scope
+) -> Object:
     try:
-        return namespace.strict_get_namespace_by_name(name)
+        return scope.strict_get_object(name)
     except KeyError:
-        for parent_namespace in parent_namespaces:
+        for parent_scope in parent_scopes:
             try:
-                return parent_namespace.strict_get_namespace_by_name(name)
+                return parent_scope.strict_get_object(name)
             except KeyError:
                 continue
     try:
-        return namespace.get_namespace_by_name(name)
+        return scope.get_object(name)
     except KeyError:
-        for parent_namespace in parent_namespaces:
+        for parent_scope in parent_scopes:
             try:
-                return parent_namespace.get_namespace_by_name(name)
+                return parent_scope.get_object(name)
             except KeyError:
                 continue
         raise NameError(name) from None

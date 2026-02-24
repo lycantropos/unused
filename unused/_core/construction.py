@@ -6,12 +6,9 @@ import functools
 
 from .context import Context
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
-from .lookup import (
-    lookup_namespace_by_expression_node,
-    lookup_namespace_by_object_name,
-)
-from .module_namespaces import BUILTINS_MODULE_NAMESPACE, MODULE_NAMESPACES
-from .namespace import Namespace, ObjectKind
+from .lookup import lookup_object_by_expression_node, lookup_object_by_name
+from .modules import BUILTINS_MODULE, MODULES
+from .object_ import Object, ObjectKind, PlainObject, Scope
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -25,68 +22,68 @@ from .object_path import (
 
 
 @functools.singledispatch
-def construct_namespace_from_expression_node(
+def construct_object_from_expression_node(
     _node: ast.expr,
-    _namespace: Namespace,
+    _namespace: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+) -> Object:
+    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
 
 
-@construct_namespace_from_expression_node.register(ast.Attribute)
+@construct_object_from_expression_node.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    namespace: Namespace,
+    namespace: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
+) -> Object:
     if (
-        object_namespace := lookup_namespace_by_expression_node(
-            node.value, namespace, *parent_namespaces, context=context
+        value_object := lookup_object_by_expression_node(
+            node.value, namespace, *parent_scopes, context=context
         )
     ) is not None:
         attribute_name = node.attr
         try:
-            return object_namespace.get_namespace_by_name(attribute_name)
+            return value_object.get_attribute(attribute_name)
         except KeyError:
             raise AttributeError(attribute_name) from None
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
 
 
-@construct_namespace_from_expression_node.register(ast.Call)
+@construct_object_from_expression_node.register(ast.Call)
 def _(
     node: ast.Call,
-    namespace: Namespace,
+    namespace: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    callable_namespace = lookup_namespace_by_expression_node(
-        node.func, namespace, *parent_namespaces, context=context
+) -> Object:
+    callable_object = lookup_object_by_expression_node(
+        node.func, namespace, *parent_scopes, context=context
     )
-    if callable_namespace is None:
-        return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
-    if callable_namespace.module_path == BUILTINS_MODULE_PATH and (
-        callable_namespace.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
+    if callable_object is None:
+        return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+    if callable_object.module_path == BUILTINS_MODULE_PATH and (
+        callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
-        first_argument_namespace = lookup_namespace_by_expression_node(
-            node.args[0], namespace, *parent_namespaces, context=context
+        first_argument_namespace = lookup_object_by_expression_node(
+            node.args[0], namespace, *parent_scopes, context=context
         )
         return (
-            Namespace(
+            PlainObject(
                 ObjectKind.METACLASS,
                 module_path,
                 local_path,
-                BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_TYPE_LOCAL_OBJECT_PATH
                 ),
             )
@@ -95,7 +92,7 @@ def _(
                 and first_argument_namespace is not None
                 and first_argument_namespace.kind is ObjectKind.CLASS
             )
-            else Namespace(
+            else PlainObject(
                 (
                     ObjectKind.UNKNOWN_CLASS
                     if (
@@ -109,56 +106,53 @@ def _(
                 ),
                 module_path,
                 local_path,
-                BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+                BUILTINS_MODULE.get_nested_attribute(
                     LocalObjectPath.from_object_name(
                         builtins.object.__qualname__
                     )
                 ),
             )
         )
-    if callable_namespace.kind is ObjectKind.CLASS:
-        return Namespace(
-            ObjectKind.INSTANCE, module_path, local_path, callable_namespace
+    if callable_object.kind is ObjectKind.CLASS:
+        return PlainObject(
+            ObjectKind.INSTANCE, module_path, local_path, callable_object
         )
-    if callable_namespace.kind is ObjectKind.METACLASS:
-        return Namespace(
-            ObjectKind.CLASS, module_path, local_path, callable_namespace
+    if callable_object.kind is ObjectKind.METACLASS:
+        return PlainObject(
+            ObjectKind.CLASS, module_path, local_path, callable_object
         )
     if (
-        callable_namespace.module_path == BUILTINS_MODULE_PATH
-        and callable_namespace.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
+        callable_object.module_path == BUILTINS_MODULE_PATH
+        and callable_object.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
-        return MODULE_NAMESPACES[namespace.module_path].get_namespace_by_name(
-            DICT_FIELD_NAME
-        )
+        return MODULES[namespace.module_path].get_attribute(DICT_FIELD_NAME)
     if (
-        callable_namespace.kind is ObjectKind.ROUTINE
-        and callable_namespace.module_path == BUILTINS_MODULE_PATH
+        callable_object.kind is ObjectKind.ROUTINE
+        and callable_object.module_path == BUILTINS_MODULE_PATH
         and (
-            callable_namespace.local_path
+            callable_object.local_path
             == LocalObjectPath.from_object_name(builtins.vars.__qualname__)
         )
     ):
         (argument_node,) = node.args
-        argument_namespace = lookup_namespace_by_expression_node(
-            argument_node, namespace, *parent_namespaces, context=context
+        argument_namespace = lookup_object_by_expression_node(
+            argument_node, namespace, *parent_scopes, context=context
         )
         assert argument_namespace is not None
-        return argument_namespace.get_namespace_by_name(DICT_FIELD_NAME)
-    if (callable_namespace.module_path == COLLECTIONS_MODULE_PATH) and (
-        callable_namespace.local_path
-        == COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH
+        return argument_namespace.get_attribute(DICT_FIELD_NAME)
+    if (callable_object.module_path == COLLECTIONS_MODULE_PATH) and (
+        callable_object.local_path == COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH
     ):
         _, namedtuple_field_name_node = node.args
         try:
             named_tuple_field_names = evaluate_expression_node(
                 namedtuple_field_name_node,
                 namespace,
-                *parent_namespaces,
+                *parent_scopes,
                 context=context,
             )
         except EVALUATION_EXCEPTIONS:
-            return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+            return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
         if isinstance(named_tuple_field_names, str):
             named_tuple_field_names = named_tuple_field_names.replace(
                 ',', ' '
@@ -166,145 +160,143 @@ def _(
         assert isinstance(named_tuple_field_names, tuple | list), ast.unparse(
             node
         )
-        named_tuple_namespace = Namespace(
+        named_tuple_namespace = PlainObject(
             ObjectKind.CLASS,
             module_path,
             local_path,
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+            BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(tuple.__qualname__)
             ),
-            BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+            BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(object.__qualname__)
             ),
         )
         for field_name in named_tuple_field_names:
-            named_tuple_namespace.set_namespace_by_name(
+            named_tuple_namespace.set_attribute(
                 field_name,
-                Namespace(
+                PlainObject(
                     ObjectKind.UNKNOWN,
                     named_tuple_namespace.module_path,
                     named_tuple_namespace.local_path.join(field_name),
                 ),
             )
         return named_tuple_namespace
-    return Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
 
 
-@construct_namespace_from_expression_node.register(ast.Dict)
-@construct_namespace_from_expression_node.register(ast.DictComp)
+@construct_object_from_expression_node.register(ast.Dict)
+@construct_object_from_expression_node.register(ast.DictComp)
 def _(
     _node: ast.Dict | ast.DictComp,
-    _namespace: Namespace,
+    _namespace: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
+) -> Object:
+    return PlainObject(
         ObjectKind.INSTANCE,
         module_path,
         local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+        BUILTINS_MODULE.get_nested_attribute(
             LocalObjectPath.from_object_name(dict.__qualname__)
         ),
     )
 
 
-@construct_namespace_from_expression_node.register(ast.List)
-@construct_namespace_from_expression_node.register(ast.ListComp)
+@construct_object_from_expression_node.register(ast.List)
+@construct_object_from_expression_node.register(ast.ListComp)
 def _(
     _node: ast.List | ast.ListComp,
-    _namespace: Namespace,
+    _namespace: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
+) -> Object:
+    return PlainObject(
         ObjectKind.INSTANCE,
         module_path,
         local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+        BUILTINS_MODULE.get_nested_attribute(
             LocalObjectPath.from_object_name(list.__qualname__)
         ),
     )
 
 
-@construct_namespace_from_expression_node.register(ast.Name)
+@construct_object_from_expression_node.register(ast.Name)
 def _(
     node: ast.Name,
-    namespace: Namespace,
+    namespace: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,  # noqa: ARG001
     module_path: ModulePath,  # noqa: ARG001
-) -> Namespace:
-    return lookup_namespace_by_object_name(
-        node.id, namespace, *parent_namespaces
-    )
+) -> Object:
+    return lookup_object_by_name(node.id, namespace, *parent_scopes)
 
 
-@construct_namespace_from_expression_node.register(ast.NamedExpr)
+@construct_object_from_expression_node.register(ast.NamedExpr)
 def _(
     node: ast.NamedExpr,
-    namespace: Namespace,
+    namespace: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
+) -> Object:
     return (
         result
         if (
-            result := lookup_namespace_by_expression_node(
-                node.value, namespace, *parent_namespaces, context=context
+            result := lookup_object_by_expression_node(
+                node.value, namespace, *parent_scopes, context=context
             )
         )
         is not None
-        else Namespace(ObjectKind.UNKNOWN, module_path, local_path)
+        else PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
     )
 
 
-@construct_namespace_from_expression_node.register(ast.Set)
-@construct_namespace_from_expression_node.register(ast.SetComp)
+@construct_object_from_expression_node.register(ast.Set)
+@construct_object_from_expression_node.register(ast.SetComp)
 def _(
     _node: ast.Set | ast.SetComp,
-    _namespace: Namespace,
+    _namespace: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
+) -> Object:
+    return PlainObject(
         ObjectKind.INSTANCE,
         module_path,
         local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+        BUILTINS_MODULE.get_nested_attribute(
             LocalObjectPath.from_object_name(set.__qualname__)
         ),
     )
 
 
-@construct_namespace_from_expression_node.register(ast.Tuple)
+@construct_object_from_expression_node.register(ast.Tuple)
 def _(
     _node: ast.Tuple,
-    _namespace: Namespace,
+    _namespace: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,
     module_path: ModulePath,
-) -> Namespace:
-    return Namespace(
+) -> Object:
+    return PlainObject(
         ObjectKind.INSTANCE,
         module_path,
         local_path,
-        BUILTINS_MODULE_NAMESPACE.get_namespace_by_path(
+        BUILTINS_MODULE.get_nested_attribute(
             LocalObjectPath.from_object_name(tuple.__qualname__)
         ),
     )

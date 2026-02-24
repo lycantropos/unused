@@ -8,8 +8,8 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 from .context import Context
-from .lookup import lookup_namespace_by_expression_node
-from .namespace import Namespace
+from .lookup import lookup_object_by_expression_node
+from .object_ import Scope
 from .object_path import BUILTINS_MODULE_PATH, LocalObjectPath, ModulePath
 
 EVALUATION_EXCEPTIONS: Final = (
@@ -24,9 +24,9 @@ EVALUATION_EXCEPTIONS: Final = (
 @functools.singledispatch
 def evaluate_expression_node(
     node: ast.expr,
-    namespace: Namespace,  # noqa: ARG001
+    scope: Scope,  # noqa: ARG001
     /,
-    *parent_namespaces: Namespace,  # noqa: ARG001
+    *parent_scopes: Scope,  # noqa: ARG001
     context: Context,  # noqa: ARG001
 ) -> Any:
     raise TypeError(type(node))
@@ -35,14 +35,14 @@ def evaluate_expression_node(
 @evaluate_expression_node.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
 ) -> Any:
     return getattr(
         evaluate_expression_node(
-            node.value, namespace, *parent_namespaces, context=context
+            node.value, scope, *parent_scopes, context=context
         ),
         node.attr,
     )
@@ -67,24 +67,20 @@ _ALLOWED_CALLABLES: Final[
 
 @evaluate_expression_node.register(ast.Call)
 def _(
-    node: ast.Call,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Call, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     try:
         callable_ = evaluate_expression_node(
-            node.func, namespace, *parent_namespaces, context=context
+            node.func, scope, *parent_scopes, context=context
         )
     except EVALUATION_EXCEPTIONS:
-        callable_namespace = lookup_namespace_by_expression_node(
-            node.func, namespace, *parent_namespaces, context=context
+        callable_object = lookup_object_by_expression_node(
+            node.func, scope, *parent_scopes, context=context
         )
-        if callable_namespace is None:
+        if callable_object is None:
             raise
         callable_ = _ALLOWED_CALLABLES.get(
-            (callable_namespace.module_path, callable_namespace.local_path)
+            (callable_object.module_path, callable_object.local_path)
         )
         if callable_ is None:
             raise
@@ -94,8 +90,8 @@ def _(
             args.extend(
                 evaluate_expression_node(
                     positional_argument_node.value,
-                    namespace,
-                    *parent_namespaces,
+                    scope,
+                    *parent_scopes,
                     context=context,
                 )
             )
@@ -103,8 +99,8 @@ def _(
             args.append(
                 evaluate_expression_node(
                     positional_argument_node,
-                    namespace,
-                    *parent_namespaces,
+                    scope,
+                    *parent_scopes,
                     context=context,
                 )
             )
@@ -113,16 +109,16 @@ def _(
         if (parameter_name := keyword_argument_node.arg) is not None:
             kwargs[parameter_name] = evaluate_expression_node(
                 keyword_argument_node.value,
-                namespace,
-                *parent_namespaces,
+                scope,
+                *parent_scopes,
                 context=context,
             )
         else:
             kwargs.update(
                 evaluate_expression_node(
                     keyword_argument_node.value,
-                    namespace,
-                    *parent_namespaces,
+                    scope,
+                    *parent_scopes,
                     context=context,
                 )
             )
@@ -150,29 +146,21 @@ _binary_operators_by_operator_type: Mapping[
 
 @evaluate_expression_node.register(ast.BinOp)
 def _(
-    node: ast.BinOp,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.BinOp, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     return _binary_operators_by_operator_type[type(node.op)](
         evaluate_expression_node(
-            node.left, namespace, *parent_namespaces, context=context
+            node.left, scope, *parent_scopes, context=context
         ),
         evaluate_expression_node(
-            node.right, namespace, *parent_namespaces, context=context
+            node.right, scope, *parent_scopes, context=context
         ),
     )
 
 
 @evaluate_expression_node.register(ast.BoolOp)
 def _(
-    node: ast.BoolOp,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.BoolOp, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     if isinstance(node.op, ast.And):
         try:
@@ -181,16 +169,13 @@ def _(
                 for value_node in node.values[:-1]
                 if not (
                     candidate := evaluate_expression_node(
-                        value_node,
-                        namespace,
-                        *parent_namespaces,
-                        context=context,
+                        value_node, scope, *parent_scopes, context=context
                     )
                 )
             )
         except StopIteration:
             return evaluate_expression_node(
-                node.values[-1], namespace, *parent_namespaces, context=context
+                node.values[-1], scope, *parent_scopes, context=context
             )
     assert isinstance(node.op, ast.Or), ast.unparse(node)
     try:
@@ -199,13 +184,13 @@ def _(
             for value_node in node.values[:-1]
             if (
                 candidate := evaluate_expression_node(
-                    value_node, namespace, *parent_namespaces, context=context
+                    value_node, scope, *parent_scopes, context=context
                 )
             )
         )
     except StopIteration:
         return evaluate_expression_node(
-            node.values[-1], namespace, *parent_namespaces, context=context
+            node.values[-1], scope, *parent_scopes, context=context
         )
 
 
@@ -227,20 +212,16 @@ _binary_comparison_operators_by_operator_node_type: Mapping[
 
 @evaluate_expression_node.register(ast.Compare)
 def _(
-    node: ast.Compare,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Compare, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> bool:
     value = evaluate_expression_node(
-        node.left, namespace, *parent_namespaces, context=context
+        node.left, scope, *parent_scopes, context=context
     )
     for operator_node, next_value in zip(
         node.ops,
         (
             evaluate_expression_node(
-                operand_node, namespace, *parent_namespaces, context=context
+                operand_node, scope, *parent_scopes, context=context
             )
             for operand_node in node.comparators
         ),
@@ -257,9 +238,9 @@ def _(
 @evaluate_expression_node.register(ast.Constant)
 def _(
     node: ast.Constant,
-    namespace: Namespace,  # noqa: ARG001
+    scope: Scope,  # noqa: ARG001
     /,
-    *parent_namespaces: Namespace,  # noqa: ARG001
+    *parent_scopes: Scope,  # noqa: ARG001
     context: Context,  # noqa: ARG001
 ) -> Any:
     return node.value
@@ -267,22 +248,18 @@ def _(
 
 @evaluate_expression_node.register(ast.Dict)
 def _(
-    node: ast.Dict,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Dict, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     result: dict[Any, Any] = {}
     for key_node, value_node in zip(node.keys, node.values, strict=True):
         value = evaluate_expression_node(
-            value_node, namespace, *parent_namespaces, context=context
+            value_node, scope, *parent_scopes, context=context
         )
         if key_node is None:
             result.update(**value)
         else:
             key = evaluate_expression_node(
-                key_node, namespace, *parent_namespaces, context=context
+                key_node, scope, *parent_scopes, context=context
             )
             result[key] = value
     return result
@@ -290,30 +267,20 @@ def _(
 
 @evaluate_expression_node.register(ast.List)
 def _(
-    node: ast.List,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.List, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> list[Any]:
     result = []
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
             result.extend(
                 evaluate_expression_node(
-                    element_node.value,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node.value, scope, *parent_scopes, context=context
                 )
             )
         else:
             result.append(
                 evaluate_expression_node(
-                    element_node,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node, scope, *parent_scopes, context=context
                 )
             )
     return result
@@ -322,18 +289,18 @@ def _(
 @evaluate_expression_node.register(ast.Name)
 def _(
     node: ast.Name,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
 ) -> Any:
     name = node.id
     try:
-        return namespace.get_object_by_name(name)
+        return scope.get_value(name)
     except KeyError:
-        for parent_namespace in parent_namespaces:
+        for parent_scope in parent_scopes:
             try:
-                return parent_namespace.get_object_by_name(name)
+                return parent_scope.get_value(name)
             except KeyError:
                 continue
         raise NameError(name) from None
@@ -341,30 +308,20 @@ def _(
 
 @evaluate_expression_node.register(ast.Set)
 def _(
-    node: ast.Set,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Set, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     result = set()
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
             result.update(
                 evaluate_expression_node(
-                    element_node.value,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node.value, scope, *parent_scopes, context=context
                 )
             )
         else:
             result.add(
                 evaluate_expression_node(
-                    element_node,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node, scope, *parent_scopes, context=context
                 )
             )
     return result
@@ -373,45 +330,41 @@ def _(
 @evaluate_expression_node.register(ast.Subscript)
 def _(
     node: ast.Subscript,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
 ) -> Any:
     return evaluate_expression_node(
-        node.value, namespace, *parent_namespaces, context=context
+        node.value, scope, *parent_scopes, context=context
     )[
         evaluate_expression_node(
-            node.slice, namespace, *parent_namespaces, context=context
+            node.slice, scope, *parent_scopes, context=context
         )
     ]
 
 
 @evaluate_expression_node.register(ast.Slice)
 def _(
-    node: ast.Slice,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Slice, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     start = (
         evaluate_expression_node(
-            start_node, namespace, *parent_namespaces, context=context
+            start_node, scope, *parent_scopes, context=context
         )
         if (start_node := node.lower) is not None
         else None
     )
     stop = (
         evaluate_expression_node(
-            stop_node, namespace, *parent_namespaces, context=context
+            stop_node, scope, *parent_scopes, context=context
         )
         if (stop_node := node.upper) is not None
         else None
     )
     step = (
         evaluate_expression_node(
-            step_node, namespace, *parent_namespaces, context=context
+            step_node, scope, *parent_scopes, context=context
         )
         if (step_node := node.step) is not None
         else None
@@ -421,30 +374,20 @@ def _(
 
 @evaluate_expression_node.register(ast.Tuple)
 def _(
-    node: ast.Tuple,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.Tuple, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> tuple[Any, ...]:
     result = []
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
             result.extend(
                 evaluate_expression_node(
-                    element_node.value,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node.value, scope, *parent_scopes, context=context
                 )
             )
         else:
             result.append(
                 evaluate_expression_node(
-                    element_node,
-                    namespace,
-                    *parent_namespaces,
-                    context=context,
+                    element_node, scope, *parent_scopes, context=context
                 )
             )
     return tuple(result)
@@ -462,14 +405,10 @@ _unary_operators_by_operator_type: Mapping[
 
 @evaluate_expression_node.register(ast.UnaryOp)
 def _(
-    node: ast.UnaryOp,
-    namespace: Namespace,
-    /,
-    *parent_namespaces: Namespace,
-    context: Context,
+    node: ast.UnaryOp, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
     return _unary_operators_by_operator_type[type(node.op)](
         evaluate_expression_node(
-            node.operand, namespace, *parent_namespaces, context=context
+            node.operand, scope, *parent_scopes, context=context
         )
     )

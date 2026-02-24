@@ -10,7 +10,7 @@ from typing import Any, Final
 
 from .dependency_node import DependencyNode
 from .missing import MISSING
-from .namespace import Namespace, ObjectKind
+from .object_ import Module, ObjectKind, PlainObject, Scope, ScopeKind
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_FROZENSET_LOCAL_OBJECT_PATH,
@@ -25,7 +25,7 @@ from .object_path import (
 )
 from .safety import is_safe
 
-MODULE_NAMESPACES: Final[dict[ModulePath, Namespace]] = {}
+MODULES: Final[dict[ModulePath, Module]] = {}
 
 
 def parse_modules(*modules: types.ModuleType) -> None:
@@ -59,15 +59,17 @@ def parse_modules(*modules: types.ModuleType) -> None:
             dependency_node.dependant_module_path,
         ):
             for submodule_path in base_submodule_path.submodule_paths():
-                MODULE_NAMESPACES.setdefault(
+                MODULES.setdefault(
                     submodule_path,
-                    Namespace(
-                        ObjectKind.STATIC_MODULE,
-                        submodule_path,
-                        LocalObjectPath(),
+                    Module(
+                        Scope(
+                            ScopeKind.STATIC_MODULE,
+                            submodule_path,
+                            LocalObjectPath(),
+                        )
                     ),
                 )
-        dependant_module_namespace = MODULE_NAMESPACES[
+        dependant_module_object = MODULES[
             dependency_node.dependant_module_path
         ]
         if (
@@ -78,14 +80,14 @@ def parse_modules(*modules: types.ModuleType) -> None:
         ):
             try:
                 dependant_namespace = (
-                    dependant_module_namespace.get_namespace_by_path(
+                    dependant_module_object.get_nested_attribute(
                         dependency_node.dependant_local_path
                     )
                 )
             except KeyError:
-                dependant_module_namespace.set_namespace_by_path(
+                dependant_module_object.set_nested_attribute(
                     dependency_node.dependant_local_path,
-                    Namespace(
+                    PlainObject(
                         dependency_node.object_kind,
                         dependency_node.module_path,
                         dependency_node.local_path,
@@ -97,29 +99,27 @@ def parse_modules(*modules: types.ModuleType) -> None:
                 ), (dependant_namespace, dependency_node)
                 del dependant_namespace
         else:
-            dependency_module_namespace = MODULE_NAMESPACES[
-                dependency_node.module_path
-            ]
+            dependency_module_object = MODULES[dependency_node.module_path]
             try:
-                dependency_namespace = (
-                    dependency_module_namespace.get_namespace_by_path(
+                dependency_object = (
+                    dependency_module_object.get_nested_attribute(
                         dependency_node.local_path
                     )
                 )
             except KeyError:
-                dependency_namespace = Namespace(
+                dependency_object = PlainObject(
                     dependency_node.object_kind,
                     dependency_node.module_path,
                     dependency_node.local_path,
                 )
-                dependency_module_namespace.set_namespace_by_path(
-                    dependency_node.local_path, dependency_namespace
+                dependency_module_object.set_nested_attribute(
+                    dependency_node.local_path, dependency_object
                 )
-            dependant_module_namespace.set_namespace_by_path(
-                dependency_node.dependant_local_path, dependency_namespace
+            dependant_module_object.set_nested_attribute(
+                dependency_node.dependant_local_path, dependency_object
             )
         if (dependency_value := dependency_node.value) is not MISSING:
-            dependant_module_namespace.set_object_by_path(
+            dependant_module_object.set_nested_value(
                 dependency_node.dependant_local_path, dependency_value
             )
         elif dependency_node.object_kind in (
@@ -127,9 +127,9 @@ def parse_modules(*modules: types.ModuleType) -> None:
             ObjectKind.METACLASS,
             ObjectKind.STATIC_MODULE,
         ):
-            dependant_module_namespace.set_object_by_path(
+            dependant_module_object.set_nested_value(
                 dependency_node.dependant_local_path,
-                dependant_module_namespace.get_namespace_by_path(
+                dependant_module_object.get_nested_attribute(
                     dependency_node.dependant_local_path
                 ).as_object(),
             )
@@ -137,14 +137,12 @@ def parse_modules(*modules: types.ModuleType) -> None:
         module_path,
         local_path,
     ), sub_object_paths in sub_object_graph.items():
-        namespace = MODULE_NAMESPACES[module_path].get_namespace_by_path(
-            local_path
-        )
+        object_ = MODULES[module_path].get_nested_attribute(local_path)
         for sub_module_path, sub_local_path in sub_object_paths:
-            sub_namespace = MODULE_NAMESPACES[
-                sub_module_path
-            ].get_namespace_by_path(sub_local_path)
-            namespace.append_sub_namespace(sub_namespace)
+            sub_object = MODULES[sub_module_path].get_nested_attribute(
+                sub_local_path
+            )
+            object_.include_object(sub_object)
 
 
 def _collect_dependencies(
@@ -429,10 +427,8 @@ def _collect_dependencies(
 
 
 parse_modules(builtins, sys, types)
-BUILTINS_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[
-    BUILTINS_MODULE_PATH
-]
-TYPES_MODULE_NAMESPACE: Final[Namespace] = MODULE_NAMESPACES[TYPES_MODULE_PATH]
+BUILTINS_MODULE: Final[Module] = MODULES[BUILTINS_MODULE_PATH]
+TYPES_MODULE_NAMESPACE: Final[Module] = MODULES[TYPES_MODULE_PATH]
 
 
 def _setup_builtin_classes() -> None:
@@ -451,7 +447,7 @@ def _setup_builtin_classes() -> None:
         builtins.type,
     ]:
         assert inspect.isclass(cls), cls
-        BUILTINS_MODULE_NAMESPACE.set_object_by_path(
+        BUILTINS_MODULE.set_nested_value(
             LocalObjectPath.from_object_name(cls.__qualname__), cls
         )
 

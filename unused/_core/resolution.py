@@ -12,11 +12,8 @@ from unused._core.context import Context
 
 from .attribute_mapping import AttributeMapping
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
-from .lookup import (
-    lookup_namespace_by_expression_node,
-    lookup_namespace_by_object_name,
-)
-from .namespace import Namespace, ObjectKind
+from .lookup import lookup_object_by_expression_node, lookup_object_by_name
+from .object_ import ObjectKind, Scope
 from .object_path import DICT_FIELD_NAME, LocalObjectPath, ModulePath
 
 
@@ -98,9 +95,9 @@ def combine_resolved_assignment_target_with_value(
 @functools.singledispatch
 def resolve_assignment_target(
     _node: ast.expr,
-    _namespace: Namespace,
+    _scope: Scope,
     /,
-    *_parent_namespaces: Namespace,
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     return None
@@ -109,14 +106,14 @@ def resolve_assignment_target(
 @resolve_assignment_target.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
 ) -> ResolvedAssignmentTarget:
     if (
         object_path := resolve_assignment_target(
-            node.value, namespace, *parent_namespaces, context=context
+            node.value, scope, *parent_scopes, context=context
         )
     ) is not None:
         assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
@@ -128,14 +125,14 @@ def _(
 @resolve_assignment_target.register(ast.Tuple)
 def _(
     node: ast.List | ast.Tuple,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
 ) -> ResolvedAssignmentTarget:
     return [
         resolve_assignment_target(
-            element_node, namespace, *parent_namespaces, context=context
+            element_node, scope, *parent_scopes, context=context
         )
         for element_node in node.elts
     ]
@@ -144,67 +141,61 @@ def _(
 @resolve_assignment_target.register(ast.Name)
 def _(
     node: ast.Name,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     object_name = node.id
     if isinstance(node.ctx, ast.Load):
-        object_namespace = lookup_namespace_by_object_name(
-            object_name, namespace, *parent_namespaces
-        )
+        object_ = lookup_object_by_name(object_name, scope, *parent_scopes)
         if (
-            object_namespace.module_path == namespace.module_path
-            and object_namespace.local_path.starts_with(namespace.local_path)
+            object_.module_path == scope.module_path
+            and object_.local_path.starts_with(scope.local_path)
         ):
             return ResolvedAssignmentTargetSplitPath(
-                namespace.module_path,
-                namespace.local_path,
+                scope.module_path,
+                scope.local_path,
                 LocalObjectPath(
-                    *object_namespace.local_path.components[
-                        len(namespace.local_path.components) :
+                    *object_.local_path.components[
+                        len(scope.local_path.components) :
                     ]
                 ),
             )
         return ResolvedAssignmentTargetSplitPath(
-            object_namespace.module_path,
-            object_namespace.local_path,
-            LocalObjectPath(),
+            object_.module_path, object_.local_path, LocalObjectPath()
         )
     return ResolvedAssignmentTargetSplitPath(
-        namespace.module_path,
-        namespace.local_path,
-        LocalObjectPath(object_name),
+        scope.module_path, scope.local_path, LocalObjectPath(object_name)
     )
 
 
 @resolve_assignment_target.register(ast.Subscript)
 def _(
     node: ast.Subscript,
-    namespace: Namespace,
+    scope: Scope,
     /,
-    *parent_namespaces: Namespace,
+    *parent_scopes: Scope,
     context: Context,
 ) -> ResolvedAssignmentTarget:
-    value_namespace = lookup_namespace_by_expression_node(
-        node.value, namespace, *parent_namespaces, context=context
+    value_object = lookup_object_by_expression_node(
+        node.value, scope, *parent_scopes, context=context
     )
-    if value_namespace is None:
+    if value_object is None:
         return None
     if not (
-        value_namespace.kind is ObjectKind.INSTANCE
-        and value_namespace.module_path == namespace.module_path
-        and value_namespace.local_path == LocalObjectPath(DICT_FIELD_NAME)
+        value_object.kind is ObjectKind.INSTANCE
+        and value_object.module_path == scope.module_path
+        and value_object.local_path == LocalObjectPath(DICT_FIELD_NAME)
     ):
         return None
     try:
         slice_value = evaluate_expression_node(
-            node.slice, namespace, *parent_namespaces, context=context
+            node.slice, scope, *parent_scopes, context=context
         )
     except EVALUATION_EXCEPTIONS:
         return None
     assert isinstance(slice_value, str), ast.unparse(node)
     return ResolvedAssignmentTargetSplitPath(
-        namespace.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
+        scope.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
     )

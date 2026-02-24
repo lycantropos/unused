@@ -175,11 +175,11 @@ def main() -> None:
 
     import ast
 
-    from unused._core.namespace_parser import (
+    from unused._core.object_path import LocalObjectPath, ModulePath
+    from unused._core.scope_parser import (
         load_module_file_paths,
         resolve_module_path,
     )
-    from unused._core.object_path import LocalObjectPath, ModulePath
 
     module_file_paths = load_module_file_paths(root_path)
     function_definition_nodes: dict[
