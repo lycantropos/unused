@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 from enum import Enum
-from typing import Any, TypeAlias, TypeVar
+from typing import Any, Final, TypeAlias, TypeVar
 
 from .attribute_mapping import AttributeMapping
 from .mapping_chain import MappingChain
@@ -207,7 +207,8 @@ class Scope:
         if value is MISSING:
             assert name in self._values
             self._values.pop(name, None)
-        self._values[name] = value
+        else:
+            self._values[name] = value
 
     def set_nested_value(
         self, local_path: LocalObjectPath, value: Any, /
@@ -256,7 +257,7 @@ class Scope:
         '_values',
     )
 
-    def __eq__(self, other: Any) -> Any:
+    def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._kind is other._kind
@@ -315,7 +316,7 @@ class PlainObject:
                 self._values,
                 *[
                     sub_namespace._values  # noqa: SLF001
-                    for sub_namespace in self._sub_namespaces
+                    for sub_namespace in self._included_objects
                 ],
             )
         )
@@ -339,20 +340,20 @@ class PlainObject:
         try:
             candidate = self._attributes[name]
         except KeyError:
-            for sub_namespace in self._sub_namespaces:
+            for included_object in self._included_objects:
                 try:
-                    candidate = sub_namespace.get_attribute(name)
+                    candidate = included_object.get_attribute(name)
                 except KeyError:
                     continue
                 else:
                     if candidate.kind is ObjectKind.ROUTINE and (
                         (
                             self._kind is ObjectKind.CLASS
-                            and sub_namespace.kind is ObjectKind.METACLASS
+                            and included_object.kind is ObjectKind.METACLASS
                         )
                         or (
                             self._kind is ObjectKind.INSTANCE
-                            and sub_namespace.kind is ObjectKind.CLASS
+                            and included_object.kind is ObjectKind.CLASS
                         )
                     ):
                         candidate = type(self)(
@@ -414,14 +415,14 @@ class PlainObject:
             ObjectKind.UNKNOWN_CLASS,
         ), (self, object_)
         assert self.kind is not ObjectKind.UNKNOWN, (self, object_)
-        assert isinstance(object_, PlainObject), (self, object_)
+        assert isinstance(object_, Object), (self, object_)
         assert object_ is not self, (self, object_)
-        assert object_ not in self._sub_namespaces, (self, object_)
-        self._sub_namespaces.append(object_)
+        assert object_ not in self._included_objects, (self, object_)
+        self._included_objects.append(object_)
 
     def instance_routine_to_routine(self, /) -> Object:
         assert self._kind is ObjectKind.INSTANCE_ROUTINE
-        (result,) = self._sub_namespaces
+        (result,) = self._included_objects
         return result
 
     def safe_delete_value(self, name: str, /) -> bool:
@@ -454,7 +455,8 @@ class PlainObject:
         if value is MISSING:
             assert name in self._values
             self._values.pop(name, None)
-        self._values[name] = value
+        else:
+            self._values[name] = value
 
     def set_nested_value(
         self, local_path: LocalObjectPath, value: Any, /
@@ -475,30 +477,30 @@ class PlainObject:
         try:
             return self._attributes[name]
         except KeyError:
-            for sub_namespace in self._sub_namespaces:
+            for included_object in self._included_objects:
                 try:
-                    return sub_namespace.strict_get_attribute(name)
+                    return included_object.strict_get_attribute(name)
                 except KeyError:
                     continue
             raise
 
     _attributes: dict[str, Object]
+    _included_objects: list[Object]
     _kind: ObjectKind
     _module_path: ModulePath
     _local_path: LocalObjectPath
-    _sub_namespaces: list[Object]
     _values: dict[str, Any]
 
     __slots__ = (
         '_attributes',
+        '_included_objects',
         '_kind',
         '_local_path',
         '_module_path',
-        '_sub_namespaces',
         '_values',
     )
 
-    def __eq__(self, other: Any) -> Any:
+    def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._kind is other._kind
@@ -506,7 +508,7 @@ class PlainObject:
                 and self._local_path == other._local_path
                 and self._attributes == other._attributes
                 and self._values == other._values
-                and self._sub_namespaces == other._sub_namespaces
+                and self._included_objects == other._included_objects
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -518,23 +520,24 @@ class PlainObject:
         module_path: ModulePath,
         local_path: LocalObjectPath,
         /,
-        *sub_namespaces: Object,
+        *included_object: Object,
     ) -> None:
+        assert kind not in CLASS_OBJECT_KINDS
         (
             self._attributes,
+            self._included_objects,
             self._kind,
             self._local_path,
             self._module_path,
-            self._sub_namespaces,
             self._values,
-        ) = {}, kind, local_path, module_path, list(sub_namespaces), {}
+        ) = {}, list(included_object), kind, local_path, module_path, {}
 
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
             f'{self._kind!r}, {self._module_path!r}, {self._local_path!r}'
-            f'{", " * bool(self._sub_namespaces)}'
-            f'{", ".join(map(repr, self._sub_namespaces))}'
+            f'{", " * bool(self._included_objects)}'
+            f'{", ".join(map(repr, self._included_objects))}'
             ')'
         )
 
@@ -560,8 +563,7 @@ class Module:
     def local_path(self, /) -> LocalObjectPath:
         return self._scope.local_path
 
-    @property
-    def scope(self, /) -> Scope:
+    def to_scope(self, /) -> Scope:
         return self._scope
 
     @property
@@ -588,9 +590,9 @@ class Module:
         try:
             return self._scope.get_object(name)
         except KeyError:
-            for sub_namespace in self._included_objects:
+            for included_object in self._included_objects:
                 try:
-                    return sub_namespace.get_attribute(name)
+                    return included_object.get_attribute(name)
                 except KeyError:
                     continue
             if self.kind in (
@@ -664,7 +666,7 @@ class Module:
 
     __slots__ = '_included_objects', '_scope'
 
-    def __eq__(self, other: Any) -> Any:
+    def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._scope == other._scope
@@ -704,8 +706,8 @@ class Class:
             MappingChain(
                 self._values,
                 *[
-                    sub_namespace._values  # noqa: SLF001
-                    for sub_namespace in self._bases
+                    base._values  # noqa: SLF001
+                    for base in self._bases
                 ],
             )
         )
@@ -864,6 +866,9 @@ class Class:
                         pass
             raise
 
+    def to_scope(self, /) -> Scope:
+        return self._scope
+
     _attributes: dict[str, Object]
     _bases: list[Object]
     _metaclass: Object | None
@@ -872,7 +877,7 @@ class Class:
 
     __slots__ = '_attributes', '_bases', '_metaclass', '_scope', '_values'
 
-    def __eq__(self, other: Any) -> Any:
+    def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._attributes == other._attributes
@@ -887,11 +892,7 @@ class Class:
     def __init__(
         self, scope: Scope, /, *bases: Object, metaclass: Object | None
     ) -> None:
-        assert scope.kind in (
-            ScopeKind.CLASS,
-            ScopeKind.METACLASS,
-            ScopeKind.UNKNOWN_CLASS,
-        )
+        assert scope.kind in CLASS_SCOPE_KINDS, scope
         (
             self._attributes,
             self._bases,
@@ -911,6 +912,18 @@ class Class:
 
 
 Object: TypeAlias = Class | Module | PlainObject
+
+
+CLASS_OBJECT_KINDS: Final = (
+    ObjectKind.CLASS,
+    ObjectKind.METACLASS,
+    ObjectKind.UNKNOWN_CLASS,
+)
+CLASS_SCOPE_KINDS: Final = (
+    ScopeKind.CLASS,
+    ScopeKind.METACLASS,
+    ScopeKind.UNKNOWN_CLASS,
+)
 
 
 def _object_get_attribute(object_: Object, name: str, /) -> Object:

@@ -5,7 +5,7 @@ import functools
 
 from .context import Context, FunctionCallContext
 from .modules import MODULES
-from .object_ import Object, ObjectKind, PlainObject, Scope
+from .object_ import Class, Object, ObjectKind, PlainObject, Scope, ScopeKind
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -70,11 +70,14 @@ def _(
             callable_object,
         )
     if callable_object.kind is ObjectKind.METACLASS:
-        return PlainObject(
-            ObjectKind.CLASS,
-            callable_object.module_path,
-            callable_object.local_path,
+        return Class(
+            Scope(
+                ScopeKind.CLASS,
+                callable_object.module_path,
+                callable_object.local_path,
+            ),
             callable_object,
+            metaclass=None,
         )
     if callable_object.kind is ObjectKind.ROUTINE:
         return PlainObject(

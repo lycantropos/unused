@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import ast
 import functools
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import chain
 from typing import Any, TypeAlias
 
 from typing_extensions import Self
 
-from unused._core.context import Context
+from unused._core.context import Context, FunctionCallContext
 
 from .attribute_mapping import AttributeMapping
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .object_ import ObjectKind, Scope
-from .object_path import DICT_FIELD_NAME, LocalObjectPath, ModulePath
+from .object_path import (
+    DICT_FIELD_NAME,
+    LocalObjectPath,
+    ModulePath,
+    SYS_MODULES_LOCAL_OBJECT_PATH,
+    SYS_MODULE_PATH,
+)
 
 
 class ResolvedAssignmentTargetSplitPath:
@@ -99,6 +105,7 @@ def resolve_assignment_target(
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
+    name_scopes: Mapping[str, Scope],  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     return None
 
@@ -110,10 +117,15 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
+    name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
     if (
         object_path := resolve_assignment_target(
-            node.value, scope, *parent_scopes, context=context
+            node.value,
+            scope,
+            *parent_scopes,
+            context=context,
+            name_scopes=name_scopes,
         )
     ) is not None:
         assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
@@ -129,10 +141,15 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
+    name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
     return [
         resolve_assignment_target(
-            element_node, scope, *parent_scopes, context=context
+            element_node,
+            scope,
+            *parent_scopes,
+            context=context,
+            name_scopes=name_scopes,
         )
         for element_node in node.elts
     ]
@@ -145,6 +162,7 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
+    name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
     object_name = node.id
     if isinstance(node.ctx, ast.Load):
@@ -165,8 +183,11 @@ def _(
         return ResolvedAssignmentTargetSplitPath(
             object_.module_path, object_.local_path, LocalObjectPath()
         )
+    name_scope = name_scopes.get(object_name, scope)
     return ResolvedAssignmentTargetSplitPath(
-        scope.module_path, scope.local_path, LocalObjectPath(object_name)
+        name_scope.module_path,
+        name_scope.local_path,
+        LocalObjectPath(object_name),
     )
 
 
@@ -177,11 +198,31 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
+    name_scopes: Mapping[str, Scope],  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
     value_object = lookup_object_by_expression_node(
         node.value, scope, *parent_scopes, context=context
     )
     if value_object is None:
+        return None
+    if (
+        value_object.kind is ObjectKind.INSTANCE
+        and value_object.module_path == SYS_MODULE_PATH
+        and value_object.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
+    ):
+        try:
+            module_name = evaluate_expression_node(
+                node.slice, scope, *parent_scopes, context=context
+            )
+        except EVALUATION_EXCEPTIONS:
+            assert not isinstance(context, FunctionCallContext)
+        else:
+            assert isinstance(module_name, str), module_name
+            return ResolvedAssignmentTargetSplitPath(
+                ModulePath.from_module_name(module_name),
+                LocalObjectPath(),
+                LocalObjectPath(),
+            )
         return None
     if not (
         value_object.kind is ObjectKind.INSTANCE

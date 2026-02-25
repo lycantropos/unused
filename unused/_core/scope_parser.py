@@ -10,13 +10,7 @@ import pkgutil
 import sys
 import tempfile
 import types
-from collections.abc import (
-    Container,
-    Iterable,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from importlib.machinery import (
     EXTENSION_SUFFIXES,
     ExtensionFileLoader,
@@ -41,6 +35,7 @@ from .modules import (
     parse_modules,
 )
 from .object_ import (
+    CLASS_SCOPE_KINDS,
     Class,
     Module,
     Object,
@@ -63,6 +58,7 @@ from .resolution import (
     combine_resolved_assignment_target_with_value,
     resolve_assignment_target,
 )
+from .utils import ensure_type
 
 FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: Final = '__defaults__'
 FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME: Final = '__kwdefaults__'
@@ -70,16 +66,6 @@ MODULE_FIELD_NAME: Final = '__module__'
 NAME_FIELD_NAME: Final = '__name__'
 QUALNAME_FIELD_NAME: Final = '__qualname__'
 
-CLASS_OBJECT_KINDS: Final[Container[ObjectKind]] = (
-    ObjectKind.CLASS,
-    ObjectKind.METACLASS,
-    ObjectKind.UNKNOWN_CLASS,
-)
-CLASS_SCOPE_KINDS: Final[Container[ScopeKind]] = (
-    ScopeKind.CLASS,
-    ScopeKind.METACLASS,
-    ScopeKind.UNKNOWN_CLASS,
-)
 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
     'ModuleType'
 )
@@ -276,8 +262,10 @@ def _does_function_modify_caller_global_state(
             )
         function_body_parser = ScopeParser(
             function_scope,
-            MODULES[function_namespace.module_path].scope,
-            BUILTINS_MODULE.scope,
+            ensure_type(
+                MODULES[function_namespace.module_path], Module
+            ).to_scope(),
+            BUILTINS_MODULE.to_scope(),
             context=FunctionCallContext(caller_module_scope.module_path),
             function_definition_nodes=function_definition_nodes,
             module_file_paths=module_file_paths,
@@ -324,48 +312,28 @@ class ScopeParser(ast.NodeVisitor):
             scope,
             parent_scopes,
         )
+        self._name_scopes: MutableMapping[str, Scope] = {}
 
     @override
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         self.generic_visit(node)
-        target_node = node.target
-        assert isinstance(target_node, ast.Name), ast.unparse(node)
-        assert isinstance(target_node.ctx, ast.Store), ast.unparse(node)
-        target_name = target_node.id
-        value_local_path = self._scope.local_path.join(target_name)
-        value_module_path = self._scope.module_path
-        self._scope.set_object(
-            target_name,
-            self._construct_object_from_expression_node(
-                value_node,
-                local_path=value_local_path,
-                module_path=value_module_path,
-            )
-            if (value_node := node.value) is not None
-            else PlainObject(
-                ObjectKind.UNKNOWN, value_module_path, value_local_path
-            ),
-        )
         if (value_node := node.value) is not None:
             try:
                 value = self._evaluate_expression_node(value_node)
             except EVALUATION_EXCEPTIONS:
-                self._scope.safe_delete_value(target_name)
-            else:
-                self._scope.set_value(target_name, value)
+                value = MISSING
+            self._process_assignment(node.target, value_node, value)
 
     @override
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.generic_visit(node)
+        value_node = node.value
         try:
-            value = self._evaluate_expression_node(node.value)
+            value = self._evaluate_expression_node(value_node)
         except EVALUATION_EXCEPTIONS:
             value = MISSING
-        self.generic_visit(node)
         for target_node in node.targets:
-            assert (
-                ctx := getattr(target_node, 'ctx', None)
-            ) is None or isinstance(ctx, ast.Store), ast.unparse(node)
-            self._process_assignment(target_node, node.value, value)
+            self._process_assignment(target_node, value_node, value)
 
     @override
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -407,7 +375,9 @@ class ScopeParser(ast.NodeVisitor):
             callable_namespace.local_path
             == LocalObjectPath(DICT_FIELD_NAME, 'update')
         ) and (
-            module_scope := MODULES[callable_namespace.module_path].scope
+            module_scope := ensure_type(
+                MODULES[callable_namespace.module_path], Module
+            ).to_scope()
         ).kind is ScopeKind.STATIC_MODULE:
             module_scope.mark_module_as_dynamic()
             return
@@ -653,6 +623,12 @@ class ScopeParser(ast.NodeVisitor):
     @override
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
         return
+
+    @override
+    def visit_Global(self, node: ast.Global) -> None:
+        self._name_scopes.update(
+            zip(node.names, repeat(self._get_module_scope()))
+        )
 
     @override
     def visit_Import(self, node: ast.Import) -> None:
@@ -1035,6 +1011,9 @@ class ScopeParser(ast.NodeVisitor):
         value: Any | Missing,
         /,
     ) -> None:
+        assert (
+            ctx := getattr(target_node, 'ctx', None)
+        ) is None or isinstance(ctx, ast.Store), ast.unparse(target_node)
         resolved_target = self._resolve_assignment_target(target_node)
         for target_object_split_path in _flatten_resolved_assignment_target(
             resolved_target
@@ -1066,6 +1045,15 @@ class ScopeParser(ast.NodeVisitor):
             ):
                 if maybe_target_object_split_path is None:
                     continue
+                if (
+                    len(maybe_target_object_split_path.relative.components)
+                    == 0
+                ):
+                    assert (
+                        len(maybe_target_object_split_path.absolute.components)
+                        == 0
+                    )
+                    continue
                 self._resolve_absolute_local_path(
                     maybe_target_object_split_path.module,
                     maybe_target_object_split_path.absolute,
@@ -1076,6 +1064,11 @@ class ScopeParser(ast.NodeVisitor):
             for (
                 target_object_split_path
             ) in _flatten_resolved_assignment_target(resolved_target):
+                if len(target_object_split_path.relative.components) == 0:
+                    assert (
+                        len(target_object_split_path.absolute.components) == 0
+                    )
+                    continue
                 self._resolve_absolute_local_path(
                     target_object_split_path.module,
                     target_object_split_path.absolute,
@@ -1086,6 +1079,13 @@ class ScopeParser(ast.NodeVisitor):
         target_object_split_path: ResolvedAssignmentTargetSplitPath,
         value_object: Class | Module | PlainObject,
     ) -> None:
+        if (
+            len(target_object_split_path.absolute.components)
+            == len(target_object_split_path.relative.components)
+            == 0
+        ):
+            MODULES[target_object_split_path.module] = value_object
+            return
         target_object_or_scope = self._resolve_absolute_local_path(
             target_object_split_path.module, target_object_split_path.absolute
         )
@@ -1124,7 +1124,11 @@ class ScopeParser(ast.NodeVisitor):
         self, node: ast.expr, /
     ) -> ResolvedAssignmentTarget:
         return resolve_assignment_target(
-            node, self._scope, *self._parent_scopes, context=self._context
+            node,
+            self._scope,
+            *self._parent_scopes,
+            context=self._context,
+            name_scopes=self._name_scopes,
         )
 
     def _resolve_absolute_module_path(
@@ -1425,7 +1429,7 @@ def resolve_module_path(
 ) -> Object:
     root_component, *rest_components = module_path.components
     root_module_path = ModulePath(root_component)
-    result: Object = _load_module_path_namespace(
+    result = _load_module_path_namespace(
         root_module_path,
         function_definition_nodes=function_definition_nodes,
         module_file_paths=module_file_paths,
@@ -1504,7 +1508,7 @@ def _load_module_path_namespace(
         ast.AsyncFunctionDef | ast.FunctionDef,
     ],
     module_file_paths: Mapping[ModulePath, Path | None],
-) -> Module:
+) -> Object:
     try:
         result = MODULES[module_path]
     except KeyError:
@@ -1553,8 +1557,8 @@ def _load_module_path_namespace(
             ),
         )
         namespace_parser = ScopeParser(
-            result.scope,
-            BUILTINS_MODULE.scope,
+            result.to_scope(),
+            BUILTINS_MODULE.to_scope(),
             context=NullContext(),
             function_definition_nodes=function_definition_nodes,
             module_file_paths=module_file_paths,

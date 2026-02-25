@@ -6,11 +6,20 @@ import inspect
 import sys
 import types
 from collections.abc import MutableMapping
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from .dependency_node import DependencyNode
 from .missing import MISSING
-from .object_ import Module, ObjectKind, PlainObject, Scope, ScopeKind
+from .object_ import (
+    CLASS_OBJECT_KINDS,
+    Class,
+    Module,
+    Object,
+    ObjectKind,
+    PlainObject,
+    Scope,
+    ScopeKind,
+)
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_FROZENSET_LOCAL_OBJECT_PATH,
@@ -24,8 +33,9 @@ from .object_path import (
     TYPES_MODULE_PATH,
 )
 from .safety import is_safe
+from .utils import ensure_type
 
-MODULES: Final[dict[ModulePath, Module]] = {}
+MODULES: Final[dict[ModulePath, Object]] = {}
 
 
 def parse_modules(*modules: types.ModuleType) -> None:
@@ -87,11 +97,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
             except KeyError:
                 dependant_module_object.set_nested_attribute(
                     dependency_node.dependant_local_path,
-                    PlainObject(
-                        dependency_node.object_kind,
-                        dependency_node.module_path,
-                        dependency_node.local_path,
-                    ),
+                    _dependency_node_to_object(dependency_node),
                 )
             else:
                 assert (
@@ -107,11 +113,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
                     )
                 )
             except KeyError:
-                dependency_object = PlainObject(
-                    dependency_node.object_kind,
-                    dependency_node.module_path,
-                    dependency_node.local_path,
-                )
+                dependency_object = _dependency_node_to_object(dependency_node)
                 dependency_module_object.set_nested_attribute(
                     dependency_node.local_path, dependency_object
                 )
@@ -143,6 +145,17 @@ def parse_modules(*modules: types.ModuleType) -> None:
                 sub_local_path
             )
             object_.include_object(sub_object)
+
+
+def _class_object_kind_to_scope_kind(
+    object_kind: ObjectKind, /
+) -> Literal[ScopeKind.CLASS, ScopeKind.METACLASS, ScopeKind.UNKNOWN_CLASS]:
+    if object_kind is ObjectKind.CLASS:
+        return ScopeKind.CLASS
+    if object_kind is ObjectKind.METACLASS:
+        return ScopeKind.METACLASS
+    assert object_kind is ObjectKind.UNKNOWN_CLASS, object_kind
+    return ScopeKind.UNKNOWN_CLASS
 
 
 def _collect_dependencies(
@@ -426,9 +439,35 @@ def _collect_dependencies(
             )
 
 
+def _dependency_node_to_object(
+    dependency_node: DependencyNode, /
+) -> Class | PlainObject:
+    return (
+        Class(
+            Scope(
+                _class_object_kind_to_scope_kind(dependency_node.object_kind),
+                dependency_node.module_path,
+                dependency_node.local_path,
+            ),
+            metaclass=None,
+        )
+        if dependency_node.object_kind in CLASS_OBJECT_KINDS
+        else PlainObject(
+            dependency_node.object_kind,
+            dependency_node.module_path,
+            dependency_node.local_path,
+        )
+    )
+
+
 parse_modules(builtins, sys, types)
-BUILTINS_MODULE: Final[Module] = MODULES[BUILTINS_MODULE_PATH]
-TYPES_MODULE_NAMESPACE: Final[Module] = MODULES[TYPES_MODULE_PATH]
+
+BUILTINS_MODULE: Final[Module] = ensure_type(
+    MODULES[BUILTINS_MODULE_PATH], Module
+)
+TYPES_MODULE_NAMESPACE: Final[Object] = ensure_type(
+    MODULES[TYPES_MODULE_PATH], Module
+)
 
 
 def _setup_builtin_classes() -> None:

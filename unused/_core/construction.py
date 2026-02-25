@@ -8,7 +8,7 @@ from .context import Context
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .modules import BUILTINS_MODULE, MODULES
-from .object_ import Object, ObjectKind, PlainObject, Scope
+from .object_ import Class, Object, ObjectKind, PlainObject, Scope, ScopeKind
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -75,42 +75,42 @@ def _(
     if callable_object.module_path == BUILTINS_MODULE_PATH and (
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
-        first_argument_namespace = lookup_object_by_expression_node(
+        first_argument_object = lookup_object_by_expression_node(
             node.args[0], namespace, *parent_scopes, context=context
         )
         return (
-            PlainObject(
-                ObjectKind.METACLASS,
-                module_path,
-                local_path,
+            Class(
+                Scope(ScopeKind.METACLASS, module_path, local_path),
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_TYPE_LOCAL_OBJECT_PATH
                 ),
+                metaclass=None,
             )
             if (
                 len(node.args) == 1
-                and first_argument_namespace is not None
-                and first_argument_namespace.kind is ObjectKind.CLASS
+                and first_argument_object is not None
+                and first_argument_object.kind is ObjectKind.CLASS
             )
-            else PlainObject(
-                (
-                    ObjectKind.UNKNOWN_CLASS
+            else Class(
+                Scope(
+                    ScopeKind.UNKNOWN_CLASS
                     if (
-                        first_argument_namespace is None
+                        first_argument_object is None
                         or (
-                            first_argument_namespace.kind
+                            first_argument_object.kind
                             in (ObjectKind.UNKNOWN_CLASS, ObjectKind.UNKNOWN)
                         )
                     )
-                    else ObjectKind.CLASS
+                    else ScopeKind.CLASS,
+                    module_path,
+                    local_path,
                 ),
-                module_path,
-                local_path,
                 BUILTINS_MODULE.get_nested_attribute(
                     LocalObjectPath.from_object_name(
                         builtins.object.__qualname__
                     )
                 ),
+                metaclass=None,
             )
         )
     if callable_object.kind is ObjectKind.CLASS:
@@ -160,16 +160,15 @@ def _(
         assert isinstance(named_tuple_field_names, tuple | list), ast.unparse(
             node
         )
-        named_tuple_namespace = PlainObject(
-            ObjectKind.CLASS,
-            module_path,
-            local_path,
+        named_tuple_namespace = Class(
+            Scope(ScopeKind.CLASS, module_path, local_path),
             BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(tuple.__qualname__)
             ),
             BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(object.__qualname__)
             ),
+            metaclass=None,
         )
         for field_name in named_tuple_field_names:
             named_tuple_namespace.set_attribute(
