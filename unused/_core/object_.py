@@ -866,9 +866,6 @@ class Class:
                         pass
             raise
 
-    def to_scope(self, /) -> Scope:
-        return self._scope
-
     _attributes: dict[str, Object]
     _bases: list[Object]
     _metaclass: Object | None
