@@ -91,11 +91,11 @@ jobs:
       - name: 'Run doctests'
         run: >
           coverage run -m doctest README.md
-          && coverage run --append -m pytest --doctest-modules --ignore=tests
+          && coverage run -m pytest --doctest-modules --ignore=tests
       - name: 'Run tests'
-        run: coverage run --append -m pytest
+        run: coverage run -m pytest
       - name: 'Collect coverage'
-        run: coverage xml
+        run: coverage combine && coverage xml
       - name: 'Upload coverage'
         uses: codecov/codecov-action@v5
         with:
