@@ -104,7 +104,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
             except KeyError:
                 dependant_module_object.set_nested_attribute(
                     dependency_node.dependant_local_path,
-                    _non_module_dependency_node_to_object(
+                    _dependency_node_to_object(
                         dependency_node,
                         base_class_paths=base_class_paths,
                         instance_class_paths=instance_class_paths,
@@ -120,7 +120,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
                     )
                 )
             except KeyError:
-                dependency_object = _non_module_dependency_node_to_object(
+                dependency_object = _dependency_node_to_object(
                     dependency_node,
                     base_class_paths=base_class_paths,
                     instance_class_paths=instance_class_paths,
@@ -520,15 +520,17 @@ def _path_to_object(object_path: ObjectPath, /) -> Object:
     return MODULES[module_path].get_nested_attribute(local_path)
 
 
-def _non_module_dependency_node_to_object(
+def _dependency_node_to_object(
     dependency_node: DependencyNode,
     /,
     *,
     base_class_paths: Mapping[ObjectPath, Collection[ObjectPath]],
     instance_class_paths: Mapping[ObjectPath, ObjectPath],
     metaclass_paths: Mapping[ObjectPath, ObjectPath],
-) -> Class | PlainObject:
+) -> Object:
     object_kind = dependency_node.object_kind
+    if object_kind is ObjectKind.STATIC_MODULE:
+        return MODULES[dependency_node.module_path]
     if _is_cls_object_kind(object_kind):
         return Class(
             Scope(
