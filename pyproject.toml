@@ -67,7 +67,7 @@ files = [
 
 [tool.coverage.run]
 source = ["unused"]
-patch = "subprocess"
+patch = ["subprocess"]
 
 [tool.pytest.ini_options]
 addopts = "--verbose -s --hypothesis-profile=default"
