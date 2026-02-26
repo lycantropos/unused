@@ -24,7 +24,7 @@ from .object_path import (
 @functools.singledispatch
 def construct_object_from_expression_node(
     _node: ast.expr,
-    _namespace: Scope,
+    _scope: Scope,
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
@@ -37,7 +37,7 @@ def construct_object_from_expression_node(
 @construct_object_from_expression_node.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    namespace: Scope,
+    scope: Scope,
     /,
     *parent_scopes: Scope,
     context: Context,
@@ -46,7 +46,7 @@ def _(
 ) -> Object:
     if (
         value_object := lookup_object_by_expression_node(
-            node.value, namespace, *parent_scopes, context=context
+            node.value, scope, *parent_scopes, context=context
         )
     ) is not None:
         attribute_name = node.attr
@@ -60,7 +60,7 @@ def _(
 @construct_object_from_expression_node.register(ast.Call)
 def _(
     node: ast.Call,
-    namespace: Scope,
+    scope: Scope,
     /,
     *parent_scopes: Scope,
     context: Context,
@@ -68,7 +68,7 @@ def _(
     module_path: ModulePath,
 ) -> Object:
     callable_object = lookup_object_by_expression_node(
-        node.func, namespace, *parent_scopes, context=context
+        node.func, scope, *parent_scopes, context=context
     )
     if callable_object is None:
         return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
@@ -76,7 +76,7 @@ def _(
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
         first_argument_object = lookup_object_by_expression_node(
-            node.args[0], namespace, *parent_scopes, context=context
+            node.args[0], scope, *parent_scopes, context=context
         )
         return (
             Class(
@@ -118,14 +118,15 @@ def _(
             ObjectKind.INSTANCE, module_path, local_path, callable_object
         )
     if callable_object.kind is ObjectKind.METACLASS:
-        return PlainObject(
-            ObjectKind.CLASS, module_path, local_path, callable_object
+        return Class(
+            Scope(ScopeKind.CLASS, module_path, local_path),
+            metaclass=callable_object,
         )
     if (
         callable_object.module_path == BUILTINS_MODULE_PATH
         and callable_object.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
-        return MODULES[namespace.module_path].get_attribute(DICT_FIELD_NAME)
+        return MODULES[scope.module_path].get_attribute(DICT_FIELD_NAME)
     if (
         callable_object.kind is ObjectKind.ROUTINE
         and callable_object.module_path == BUILTINS_MODULE_PATH
@@ -135,11 +136,11 @@ def _(
         )
     ):
         (argument_node,) = node.args
-        argument_namespace = lookup_object_by_expression_node(
-            argument_node, namespace, *parent_scopes, context=context
+        argument_object = lookup_object_by_expression_node(
+            argument_node, scope, *parent_scopes, context=context
         )
-        assert argument_namespace is not None
-        return argument_namespace.get_attribute(DICT_FIELD_NAME)
+        assert argument_object is not None
+        return argument_object.get_attribute(DICT_FIELD_NAME)
     if (callable_object.module_path == COLLECTIONS_MODULE_PATH) and (
         callable_object.local_path == COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH
     ):
@@ -147,7 +148,7 @@ def _(
         try:
             named_tuple_field_names = evaluate_expression_node(
                 namedtuple_field_name_node,
-                namespace,
+                scope,
                 *parent_scopes,
                 context=context,
             )
@@ -160,7 +161,7 @@ def _(
         assert isinstance(named_tuple_field_names, tuple | list), ast.unparse(
             node
         )
-        named_tuple_namespace = Class(
+        named_tuple_object = Class(
             Scope(ScopeKind.CLASS, module_path, local_path),
             BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(tuple.__qualname__)
@@ -171,15 +172,15 @@ def _(
             metaclass=None,
         )
         for field_name in named_tuple_field_names:
-            named_tuple_namespace.set_attribute(
+            named_tuple_object.set_attribute(
                 field_name,
                 PlainObject(
                     ObjectKind.UNKNOWN,
-                    named_tuple_namespace.module_path,
-                    named_tuple_namespace.local_path.join(field_name),
+                    named_tuple_object.module_path,
+                    named_tuple_object.local_path.join(field_name),
                 ),
             )
-        return named_tuple_namespace
+        return named_tuple_object
     return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
 
 
@@ -187,7 +188,7 @@ def _(
 @construct_object_from_expression_node.register(ast.DictComp)
 def _(
     _node: ast.Dict | ast.DictComp,
-    _namespace: Scope,
+    _scope: Scope,
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
@@ -208,7 +209,7 @@ def _(
 @construct_object_from_expression_node.register(ast.ListComp)
 def _(
     _node: ast.List | ast.ListComp,
-    _namespace: Scope,
+    _scope: Scope,
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
@@ -228,20 +229,20 @@ def _(
 @construct_object_from_expression_node.register(ast.Name)
 def _(
     node: ast.Name,
-    namespace: Scope,
+    scope: Scope,
     /,
     *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
     local_path: LocalObjectPath,  # noqa: ARG001
     module_path: ModulePath,  # noqa: ARG001
 ) -> Object:
-    return lookup_object_by_name(node.id, namespace, *parent_scopes)
+    return lookup_object_by_name(node.id, scope, *parent_scopes)
 
 
 @construct_object_from_expression_node.register(ast.NamedExpr)
 def _(
     node: ast.NamedExpr,
-    namespace: Scope,
+    scope: Scope,
     /,
     *parent_scopes: Scope,
     context: Context,
@@ -252,7 +253,7 @@ def _(
         result
         if (
             result := lookup_object_by_expression_node(
-                node.value, namespace, *parent_scopes, context=context
+                node.value, scope, *parent_scopes, context=context
             )
         )
         is not None
@@ -264,7 +265,7 @@ def _(
 @construct_object_from_expression_node.register(ast.SetComp)
 def _(
     _node: ast.Set | ast.SetComp,
-    _namespace: Scope,
+    _scope: Scope,
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
@@ -284,7 +285,7 @@ def _(
 @construct_object_from_expression_node.register(ast.Tuple)
 def _(
     _node: ast.Tuple,
-    _namespace: Scope,
+    _scope: Scope,
     /,
     *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001

@@ -8,15 +8,20 @@ import types
 from collections.abc import Collection, Mapping, MutableMapping
 from typing import Any, Final, Literal, TypeAlias
 
+from typing_extensions import TypeIs
+
 from .dependency_node import DependencyNode
 from .missing import MISSING
 from .object_ import (
     CLASS_OBJECT_KINDS,
     Class,
+    ClassObjectKind,
     Module,
     Object,
     ObjectKind,
+    PLAIN_OBJECT_KINDS,
     PlainObject,
+    PlainObjectKind,
     Scope,
     ScopeKind,
 )
@@ -99,7 +104,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
             except KeyError:
                 dependant_module_object.set_nested_attribute(
                     dependency_node.dependant_local_path,
-                    _dependency_node_to_object(
+                    _non_module_dependency_node_to_object(
                         dependency_node,
                         base_class_paths=base_class_paths,
                         instance_class_paths=instance_class_paths,
@@ -115,7 +120,7 @@ def parse_modules(*modules: types.ModuleType) -> None:
                     )
                 )
             except KeyError:
-                dependency_object = _dependency_node_to_object(
+                dependency_object = _non_module_dependency_node_to_object(
                     dependency_node,
                     base_class_paths=base_class_paths,
                     instance_class_paths=instance_class_paths,
@@ -144,8 +149,8 @@ def parse_modules(*modules: types.ModuleType) -> None:
             )
 
 
-def _class_object_kind_to_scope_kind(
-    object_kind: ObjectKind, /
+def _cls_object_kind_to_scope_kind(
+    object_kind: ClassObjectKind, /
 ) -> Literal[ScopeKind.CLASS, ScopeKind.METACLASS, ScopeKind.UNKNOWN_CLASS]:
     if object_kind is ObjectKind.CLASS:
         return ScopeKind.CLASS
@@ -515,7 +520,7 @@ def _path_to_object(object_path: ObjectPath, /) -> Object:
     return MODULES[module_path].get_nested_attribute(local_path)
 
 
-def _dependency_node_to_object(
+def _non_module_dependency_node_to_object(
     dependency_node: DependencyNode,
     /,
     *,
@@ -523,10 +528,11 @@ def _dependency_node_to_object(
     instance_class_paths: Mapping[ObjectPath, ObjectPath],
     metaclass_paths: Mapping[ObjectPath, ObjectPath],
 ) -> Class | PlainObject:
-    return (
-        Class(
+    object_kind = dependency_node.object_kind
+    if _is_cls_object_kind(object_kind):
+        return Class(
             Scope(
-                _class_object_kind_to_scope_kind(dependency_node.object_kind),
+                _cls_object_kind_to_scope_kind(object_kind),
                 dependency_node.module_path,
                 dependency_node.local_path,
             ),
@@ -551,26 +557,32 @@ def _dependency_node_to_object(
                 else None
             ),
         )
-        if dependency_node.object_kind in CLASS_OBJECT_KINDS
-        else PlainObject(
-            dependency_node.object_kind,
-            dependency_node.module_path,
-            dependency_node.local_path,
-            *(
-                (_path_to_object(class_path),)
-                if (
-                    class_path := instance_class_paths.get(
-                        (
-                            dependency_node.module_path,
-                            dependency_node.local_path,
-                        )
-                    )
+    assert _is_plain_object_kind(object_kind), object_kind
+    return PlainObject(
+        object_kind,
+        dependency_node.module_path,
+        dependency_node.local_path,
+        *(
+            (_path_to_object(class_path),)
+            if (
+                class_path := instance_class_paths.get(
+                    (dependency_node.module_path, dependency_node.local_path)
                 )
-                is not None
-                else ()
-            ),
-        )
+            )
+            is not None
+            else ()
+        ),
     )
+
+
+def _is_cls_object_kind(object_kind: ObjectKind, /) -> TypeIs[ClassObjectKind]:
+    return object_kind in CLASS_OBJECT_KINDS
+
+
+def _is_plain_object_kind(
+    object_kind: ObjectKind, /
+) -> TypeIs[PlainObjectKind]:
+    return object_kind in PLAIN_OBJECT_KINDS
 
 
 parse_modules(builtins, sys, types)

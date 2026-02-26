@@ -315,8 +315,8 @@ class PlainObject:
             MappingChain(
                 self._values,
                 *[
-                    sub_namespace._values  # noqa: SLF001
-                    for sub_namespace in self._included_objects
+                    included_object._values  # noqa: SLF001
+                    for included_object in self._included_objects
                 ],
             )
         )

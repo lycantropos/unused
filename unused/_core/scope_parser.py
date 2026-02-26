@@ -73,7 +73,7 @@ BUILTINS_STR_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 
 
 def _does_function_modify_caller_global_state(
-    function_namespace: Object,
+    function_object: Object,
     /,
     *,
     cache: dict[tuple[ModulePath, LocalObjectPath], bool] = {},  # noqa: B006
@@ -86,22 +86,22 @@ def _does_function_modify_caller_global_state(
     module_file_paths: Mapping[ModulePath, Path | None],
     positional_arguments: Sequence[Any | Missing | Starred],
 ) -> bool:
-    cache_key = (function_namespace.module_path, function_namespace.local_path)
+    cache_key = (function_object.module_path, function_object.local_path)
     try:
         return cache[cache_key]
     except KeyError:
         try:
             function_definition_node = function_definition_nodes[
-                function_namespace.module_path, function_namespace.local_path
+                function_object.module_path, function_object.local_path
             ]
         except KeyError:
-            assert module_file_paths[function_namespace.module_path] is None, (
-                function_namespace
+            assert module_file_paths[function_object.module_path] is None, (
+                function_object
             )
             cache[cache_key] = result = (
-                function_namespace.module_path == BUILTINS_MODULE_PATH
+                function_object.module_path == BUILTINS_MODULE_PATH
                 and (
-                    function_namespace.local_path
+                    function_object.local_path
                     in (
                         LocalObjectPath.from_object_name(
                             builtins.eval.__qualname__
@@ -126,8 +126,8 @@ def _does_function_modify_caller_global_state(
         signature_node = function_definition_node.args
         function_scope = Scope(
             ScopeKind.FUNCTION,
-            function_namespace.module_path,
-            function_namespace.local_path,
+            function_object.module_path,
+            function_object.local_path,
         )
         positional_parameter_nodes = list(
             chain(signature_node.posonlyargs, signature_node.args)
@@ -150,17 +150,15 @@ def _does_function_modify_caller_global_state(
                 positional_parameter_name,
                 PlainObject(
                     ObjectKind.UNKNOWN,
-                    function_namespace.module_path,
-                    function_namespace.local_path.join(
-                        positional_parameter_name
-                    ),
+                    function_object.module_path,
+                    function_object.local_path.join(positional_parameter_name),
                 ),
             )
             if positional_argument is not MISSING:
                 function_scope.set_value(
                     positional_parameter_name, positional_argument
                 )
-        positional_defaults = function_namespace.get_value(
+        positional_defaults = function_object.get_value(
             FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
         )
         defaulted_positional_parameter_nodes = positional_parameter_nodes[
@@ -178,8 +176,8 @@ def _does_function_modify_caller_global_state(
                 defaulted_positional_parameter_name,
                 PlainObject(
                     ObjectKind.UNKNOWN,
-                    function_namespace.module_path,
-                    function_namespace.local_path.join(
+                    function_object.module_path,
+                    function_object.local_path.join(
                         defaulted_positional_parameter_name
                     ),
                 ),
@@ -194,8 +192,8 @@ def _does_function_modify_caller_global_state(
                 keyword_parameter_name,
                 PlainObject(
                     ObjectKind.UNKNOWN,
-                    function_namespace.module_path,
-                    function_namespace.local_path.join(keyword_parameter_name),
+                    function_object.module_path,
+                    function_object.local_path.join(keyword_parameter_name),
                 ),
             )
             try:
@@ -203,7 +201,7 @@ def _does_function_modify_caller_global_state(
                     keyword_parameter_name
                 )
             except KeyError:
-                keyword_argument = function_namespace.get_value(
+                keyword_argument = function_object.get_value(
                     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
                 )[keyword_parameter_name]
             if keyword_argument is not MISSING:
@@ -220,8 +218,8 @@ def _does_function_modify_caller_global_state(
                 variadic_positional_parameter_name,
                 PlainObject(
                     ObjectKind.INSTANCE,
-                    function_namespace.module_path,
-                    function_namespace.local_path.join(
+                    function_object.module_path,
+                    function_object.local_path.join(
                         variadic_positional_parameter_name
                     ),
                     BUILTINS_MODULE.get_nested_attribute(
@@ -243,8 +241,8 @@ def _does_function_modify_caller_global_state(
                 variadic_keyword_parameter_name,
                 PlainObject(
                     ObjectKind.INSTANCE,
-                    function_namespace.module_path,
-                    function_namespace.local_path.join(
+                    function_object.module_path,
+                    function_object.local_path.join(
                         variadic_keyword_parameter_name
                     ),
                     BUILTINS_MODULE.get_nested_attribute(
@@ -258,7 +256,7 @@ def _does_function_modify_caller_global_state(
         function_body_parser = ScopeParser(
             function_scope,
             ensure_type(
-                MODULES[function_namespace.module_path], Module
+                MODULES[function_object.module_path], Module
             ).to_scope(),
             BUILTINS_MODULE.to_scope(),
             context=FunctionCallContext(caller_module_scope.module_path),
@@ -363,26 +361,26 @@ class ScopeParser(ast.NodeVisitor):
     @override
     def visit_Call(self, node: ast.Call) -> None:
         self.generic_visit(node)
-        callable_namespace = self._lookup_object_by_expression_node(node.func)
-        if callable_namespace is None:
+        callable_object = self._lookup_object_by_expression_node(node.func)
+        if callable_object is None:
             return
         if (
-            callable_namespace.local_path
+            callable_object.local_path
             == LocalObjectPath(DICT_FIELD_NAME, 'update')
         ) and (
             module_scope := ensure_type(
-                MODULES[callable_namespace.module_path], Module
+                MODULES[callable_object.module_path], Module
             ).to_scope()
         ).kind is ScopeKind.STATIC_MODULE:
             module_scope.mark_module_as_dynamic()
             return
         if (
             (
-                callable_namespace.kind
+                callable_object.kind
                 in (ObjectKind.INSTANCE_ROUTINE, ObjectKind.ROUTINE)
             )
             and _does_function_modify_caller_global_state(
-                _to_plain_routine_object(callable_namespace),
+                _to_plain_routine_object(callable_object),
                 caller_module_scope=self._get_module_scope(),
                 function_definition_nodes=self._function_definition_nodes,
                 keyword_arguments=self._evaluate_keyword_arguments(
@@ -390,7 +388,7 @@ class ScopeParser(ast.NodeVisitor):
                 ),
                 module_file_paths=self._module_file_paths,
                 positional_arguments=self._to_complete_positional_arguments(
-                    node.args, callable_namespace
+                    node.args, callable_object
                 ),
             )
         ) and (
@@ -401,24 +399,24 @@ class ScopeParser(ast.NodeVisitor):
 
     @override
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        class_name = node.name
-        class_module_path = self._scope.module_path
-        class_local_path = self._scope.local_path.join(class_name)
+        cls_name = node.name
+        cls_module_path = self._scope.module_path
+        cls_local_path = self._scope.local_path.join(cls_name)
         base_cls_objects: list[Object] = []
         for index, base_node in reversed([*enumerate(node.bases)]):
             self.visit(base_node)
             base_cls = self._construct_object_from_expression_node(
                 base_node,
-                local_path=class_local_path.join(
+                local_path=cls_local_path.join(
                     # FIXME: add support for indexing?
                     f'__bases___{index}'
                 ),
-                module_path=class_module_path,
+                module_path=cls_module_path,
             )
             if base_cls is None:
                 continue
             base_cls_objects.append(base_cls)
-        class_scope = Scope(
+        cls_scope = Scope(
             (
                 ScopeKind.METACLASS
                 if any(
@@ -438,24 +436,24 @@ class ScopeParser(ast.NodeVisitor):
                 )
             ),
             self._scope.module_path,
-            class_local_path,
+            cls_local_path,
         )
-        class_parser = ScopeParser(
-            class_scope,
+        cls_parser = ScopeParser(
+            cls_scope,
             *self._get_inherited_scopes(),
             context=self._context,
             function_definition_nodes=self._function_definition_nodes,
             module_file_paths=self._module_file_paths,
         )
         for body_node in node.body:
-            class_parser.visit(body_node)
+            cls_parser.visit(body_node)
         metacls_object: Object | None = None
         for keyword in node.keywords:
             if keyword.arg == 'metaclass':
                 metacls_object = self._construct_object_from_expression_node(
                     keyword.value,
-                    local_path=class_local_path.join('__class__'),
-                    module_path=class_module_path,
+                    local_path=cls_local_path.join('__class__'),
+                    module_path=cls_module_path,
                 )
                 if metacls_object is None:
                     continue
@@ -463,8 +461,8 @@ class ScopeParser(ast.NodeVisitor):
                     ObjectKind.METACLASS,
                     ObjectKind.UNKNOWN_CLASS,
                 )
-        class_object = Class(
-            class_scope,
+        cls_object = Class(
+            cls_scope,
             *(
                 [
                     BUILTINS_MODULE.get_nested_attribute(
@@ -476,56 +474,56 @@ class ScopeParser(ast.NodeVisitor):
             ),
             metaclass=metacls_object,
         )
-        class_object.set_attribute(
+        cls_object.set_attribute(
             DICT_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                class_module_path,
-                class_local_path.join(DICT_FIELD_NAME),
+                cls_module_path,
+                cls_local_path.join(DICT_FIELD_NAME),
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_DICT_LOCAL_OBJECT_PATH
                 ),
             ),
         )
-        class_object.set_attribute(
+        cls_object.set_attribute(
             MODULE_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                class_module_path,
-                class_local_path.join(MODULE_FIELD_NAME),
+                cls_module_path,
+                cls_local_path.join(MODULE_FIELD_NAME),
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_STR_LOCAL_OBJECT_PATH
                 ),
             ),
         )
-        class_object.set_value(
-            MODULE_FIELD_NAME, class_module_path.to_module_name()
+        cls_object.set_value(
+            MODULE_FIELD_NAME, cls_module_path.to_module_name()
         )
-        class_object.set_attribute(
+        cls_object.set_attribute(
             NAME_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                class_module_path,
-                class_local_path.join(NAME_FIELD_NAME),
+                cls_module_path,
+                cls_local_path.join(NAME_FIELD_NAME),
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_STR_LOCAL_OBJECT_PATH
                 ),
             ),
         )
-        class_object.set_value(NAME_FIELD_NAME, class_name)
-        class_object.set_attribute(
+        cls_object.set_value(NAME_FIELD_NAME, cls_name)
+        cls_object.set_attribute(
             QUALNAME_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                class_module_path,
-                class_local_path.join(QUALNAME_FIELD_NAME),
+                cls_module_path,
+                cls_local_path.join(QUALNAME_FIELD_NAME),
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_STR_LOCAL_OBJECT_PATH
                 ),
             ),
         )
-        class_object.set_value(
-            QUALNAME_FIELD_NAME, class_local_path.to_object_name()
+        cls_object.set_value(
+            QUALNAME_FIELD_NAME, cls_local_path.to_object_name()
         )
         for decorator_node in node.decorator_list:
             self.visit(decorator_node)
@@ -554,7 +552,7 @@ class ScopeParser(ast.NodeVisitor):
                         *self._to_complete_positional_arguments(
                             [], decorator_object
                         ),
-                        class_scope.as_object(),
+                        cls_scope.as_object(),
                     ],
                     keyword_arguments={},
                     function_definition_nodes=self._function_definition_nodes,
@@ -567,8 +565,8 @@ class ScopeParser(ast.NodeVisitor):
             ):
                 module_scope.mark_module_as_dynamic()
                 continue
-        self._scope.set_object(class_name, class_object)
-        self._scope.set_value(class_name, class_scope.as_object())
+        self._scope.set_object(cls_name, cls_object)
+        self._scope.set_value(cls_name, cls_scope.as_object())
 
     @override
     def visit_DictComp(self, node: ast.DictComp) -> None:
@@ -721,28 +719,24 @@ class ScopeParser(ast.NodeVisitor):
                 continue
             value: Any | Missing
             try:
-                object_namespace = top_submodule_object.get_attribute(
-                    alias.name
-                )
+                object_ = top_submodule_object.get_attribute(alias.name)
             except KeyError:
                 if (
                     submodule_path := top_submodule_object.module_path.join(
                         alias.name
                     )
                 ) in self._module_file_paths:
-                    object_namespace = self._resolve_absolute_module_path(
+                    object_ = self._resolve_absolute_module_path(
                         submodule_path
                     )
-                    value = object_namespace.as_object()
+                    value = object_.as_object()
                 else:
-                    object_namespace = PlainObject(
+                    object_ = PlainObject(
                         ObjectKind.UNKNOWN,
                         top_submodule_object.module_path,
                         LocalObjectPath(alias.name),
                     )
-                    top_submodule_object.set_attribute(
-                        alias.name, object_namespace
-                    )
+                    top_submodule_object.set_attribute(alias.name, object_)
                     value = MISSING
             else:
                 try:
@@ -750,7 +744,7 @@ class ScopeParser(ast.NodeVisitor):
                 except KeyError:
                     value = MISSING
             object_alias_or_name = alias.asname or alias.name
-            self._scope.set_object(object_alias_or_name, object_namespace)
+            self._scope.set_object(object_alias_or_name, object_)
             if value is not MISSING:
                 self._scope.set_value(object_alias_or_name, value)
 
@@ -807,22 +801,22 @@ class ScopeParser(ast.NodeVisitor):
         except Exception as error:
             for handler in node.handlers:
                 exception_type_node = handler.type
-                exception_type_namespace = (
+                exception_cls_object = (
                     self._lookup_object_by_expression_node(exception_type_node)
                     if exception_type_node is not None
                     else None
                 )
-                if exception_type_namespace is None or (
+                if exception_cls_object is None or (
                     any(
                         (
                             (
-                                exception_type_namespace.module_path
+                                exception_cls_object.module_path
                                 == ModulePath.from_module_name(
                                     exception_cls.__module__
                                 )
                             )
                             and (
-                                exception_type_namespace.local_path
+                                exception_cls_object.local_path
                                 == LocalObjectPath.from_object_name(
                                     exception_cls.__qualname__
                                 )
@@ -833,14 +827,14 @@ class ScopeParser(ast.NodeVisitor):
                 ):
                     exception_name = handler.name
                     if exception_name is not None:
-                        assert exception_type_namespace is not None
+                        assert exception_cls_object is not None
                         self._scope.set_object(
                             exception_name,
                             PlainObject(
                                 ObjectKind.INSTANCE,
                                 self._scope.module_path,
                                 self._scope.local_path.join(exception_name),
-                                exception_type_namespace,
+                                exception_cls_object,
                             ),
                         )
                     for handler_node in handler.body:
@@ -870,26 +864,23 @@ class ScopeParser(ast.NodeVisitor):
             for item_node in node.items:
                 item_expression_node = item_node.context_expr
                 if isinstance(item_expression_node, ast.Call):
-                    callable_namespace = (
-                        self._lookup_object_by_expression_node(
-                            item_expression_node.func
-                        )
+                    callable_object = self._lookup_object_by_expression_node(
+                        item_expression_node.func
                     )
-                    if callable_namespace is None:
+                    if callable_object is None:
                         continue
                     if (
-                        callable_namespace.module_path
-                        == CONTEXTLIB_MODULE_PATH
+                        callable_object.module_path == CONTEXTLIB_MODULE_PATH
                     ) and (
-                        callable_namespace.local_path
+                        callable_object.local_path
                         == CONTEXTLIB_SUPPRESS_LOCAL_OBJECT_PATH
                     ):
-                        exception_namespaces = [
-                            exception_namespace
+                        exception_objects = [
+                            exception_object
                             for argument_node in item_expression_node.args
                             if (
                                 (
-                                    exception_namespace
+                                    exception_object
                                     := self._lookup_object_by_expression_node(
                                         argument_node
                                     )
@@ -900,13 +891,13 @@ class ScopeParser(ast.NodeVisitor):
                         if any(
                             (
                                 (
-                                    exception_namespace.module_path
+                                    exception_object.module_path
                                     == ModulePath.from_module_name(
                                         exception_cls.__module__
                                     )
                                 )
                                 and (
-                                    exception_namespace.local_path
+                                    exception_object.local_path
                                     == (
                                         LocalObjectPath.from_object_name(
                                             exception_cls.__qualname__
@@ -915,7 +906,7 @@ class ScopeParser(ast.NodeVisitor):
                                 )
                                 for exception_cls in type(error).mro()[:-1]
                             )
-                            for exception_namespace in exception_namespaces
+                            for exception_object in exception_objects
                         ):
                             return
             raise
@@ -1138,15 +1129,15 @@ class ScopeParser(ast.NodeVisitor):
     def _to_complete_positional_arguments(
         self,
         positional_argument_nodes: Sequence[ast.expr],
-        callable_namespace: Object,
+        callable_object: Object,
         /,
     ) -> Sequence[Any | Missing | Starred]:
         result: list[Any] = []
-        if callable_namespace.kind is ObjectKind.INSTANCE_ROUTINE:
-            instance_local_path = callable_namespace.local_path.parent
+        if callable_object.kind is ObjectKind.INSTANCE_ROUTINE:
+            instance_local_path = callable_object.local_path.parent
             result.append(
                 self._resolve_absolute_local_path(
-                    callable_namespace.module_path, instance_local_path.parent
+                    callable_object.module_path, instance_local_path.parent
                 ).get_value_or_else(
                     instance_local_path.components[-1], default=MISSING
                 )
@@ -1178,16 +1169,16 @@ class ScopeParser(ast.NodeVisitor):
     ) -> None:
         function_name = node.name
         for decorator_node in node.decorator_list:
-            decorator_namespace = self._lookup_object_by_expression_node(
+            decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
             )
-            if decorator_namespace is None:
+            if decorator_object is None:
                 continue
-            if decorator_namespace.module_path == BUILTINS_MODULE_PATH and (
-                decorator_namespace.local_path
+            if decorator_object.module_path == BUILTINS_MODULE_PATH and (
+                decorator_object.local_path
                 == BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
             ):
-                function_namespace = PlainObject(
+                function_object = PlainObject(
                     ObjectKind.PROPERTY,
                     self._scope.module_path,
                     self._scope.local_path.join(function_name),
@@ -1196,8 +1187,8 @@ class ScopeParser(ast.NodeVisitor):
                     ),
                 )
                 break
-            if decorator_namespace.module_path == BUILTINS_MODULE_PATH and (
-                decorator_namespace.local_path
+            if decorator_object.module_path == BUILTINS_MODULE_PATH and (
+                decorator_object.local_path
                 in (
                     LocalObjectPath.from_object_name(
                         property.deleter.__qualname__
@@ -1208,11 +1199,11 @@ class ScopeParser(ast.NodeVisitor):
                 )
             ):
                 return
-            if decorator_namespace.module_path == FUNCTOOLS_MODULE_PATH and (
-                decorator_namespace.local_path
+            if decorator_object.module_path == FUNCTOOLS_MODULE_PATH and (
+                decorator_object.local_path
                 == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
             ):
-                function_namespace = PlainObject(
+                function_object = PlainObject(
                     ObjectKind.ROUTINE,
                     self._scope.module_path,
                     self._scope.local_path.join(function_name),
@@ -1221,27 +1212,27 @@ class ScopeParser(ast.NodeVisitor):
                     ),
                     PlainObject(
                         ObjectKind.UNKNOWN,
-                        decorator_namespace.module_path,
-                        decorator_namespace.local_path,
+                        decorator_object.module_path,
+                        decorator_object.local_path,
                     ),
                 )
                 break
-            if decorator_namespace.module_path == FUNCTOOLS_MODULE_PATH and (
-                decorator_namespace.local_path.starts_with(
+            if decorator_object.module_path == FUNCTOOLS_MODULE_PATH and (
+                decorator_object.local_path.starts_with(
                     FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
                 )
             ):
                 return
-            if decorator_namespace.kind is ObjectKind.CLASS:
-                function_namespace = PlainObject(
+            if decorator_object.kind is ObjectKind.CLASS:
+                function_object = PlainObject(
                     ObjectKind.INSTANCE,
                     self._scope.module_path,
                     self._scope.local_path.join(function_name),
-                    decorator_namespace,
+                    decorator_object,
                 )
                 break
         else:
-            function_namespace = PlainObject(
+            function_object = PlainObject(
                 ObjectKind.ROUTINE,
                 self._scope.module_path,
                 self._scope.local_path.join(function_name),
@@ -1278,12 +1269,12 @@ class ScopeParser(ast.NodeVisitor):
             keyword_only_defaults[keyword_parameter_node.arg] = (
                 keyword_only_default_value
             )
-        function_namespace.set_attribute(
+        function_object.set_attribute(
             FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                function_namespace.module_path,
-                function_namespace.local_path.join(
+                function_object.module_path,
+                function_object.local_path.join(
                     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
                 ),
                 BUILTINS_MODULE.get_nested_attribute(
@@ -1293,15 +1284,15 @@ class ScopeParser(ast.NodeVisitor):
                 ),
             ),
         )
-        function_namespace.set_value(
+        function_object.set_value(
             FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME, positional_defaults
         )
-        function_namespace.set_attribute(
+        function_object.set_attribute(
             FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
             PlainObject(
                 ObjectKind.INSTANCE,
-                function_namespace.module_path,
-                function_namespace.local_path.join(
+                function_object.module_path,
+                function_object.local_path.join(
                     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
                 ),
                 BUILTINS_MODULE.get_nested_attribute(
@@ -1311,20 +1302,20 @@ class ScopeParser(ast.NodeVisitor):
                 ),
             ),
         )
-        function_namespace.set_value(
+        function_object.set_value(
             FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME, keyword_only_defaults
         )
-        self._scope.set_object(function_name, function_namespace)
+        self._scope.set_object(function_name, function_object)
         self._function_definition_nodes[
             self._scope.module_path, self._scope.local_path.join(function_name)
         ] = node
 
 
-def _to_plain_routine_object(callable_namespace: Object) -> Object:
-    if callable_namespace.kind is ObjectKind.INSTANCE_ROUTINE:
-        assert isinstance(callable_namespace, PlainObject), callable_namespace
-        return callable_namespace.instance_routine_to_routine()
-    return callable_namespace
+def _to_plain_routine_object(callable_object: Object) -> Object:
+    if callable_object.kind is ObjectKind.INSTANCE_ROUTINE:
+        assert isinstance(callable_object, PlainObject), callable_object
+        return callable_object.instance_routine_to_routine()
+    return callable_object
 
 
 def load_module_file_paths(
@@ -1424,7 +1415,7 @@ def resolve_module_path(
 ) -> Object:
     root_component, *rest_components = module_path.components
     root_module_path = ModulePath(root_component)
-    result = _load_module_path_namespace(
+    result = _load_module_by_path(
         root_module_path,
         function_definition_nodes=function_definition_nodes,
         module_file_paths=module_file_paths,
@@ -1432,7 +1423,7 @@ def resolve_module_path(
     for component in rest_components:
         try:
             submodule_path = result.module_path.join(component)
-            result = _load_module_path_namespace(
+            result = _load_module_by_path(
                 submodule_path,
                 function_definition_nodes=function_definition_nodes,
                 module_file_paths=module_file_paths,
@@ -1494,7 +1485,7 @@ FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 )
 
 
-def _load_module_path_namespace(
+def _load_module_by_path(
     module_path: ModulePath,
     /,
     *,
@@ -1551,7 +1542,7 @@ def _load_module_path_namespace(
                 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH
             ),
         )
-        namespace_parser = ScopeParser(
+        scope_parser = ScopeParser(
             result.to_scope(),
             BUILTINS_MODULE.to_scope(),
             context=NullContext(),
@@ -1559,7 +1550,7 @@ def _load_module_path_namespace(
             module_file_paths=module_file_paths,
         )
         try:
-            namespace_parser.visit(module_node)
+            scope_parser.visit(module_node)
         except Exception:
             del MODULES[module_path]
             raise
