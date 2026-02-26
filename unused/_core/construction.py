@@ -5,10 +5,11 @@ import builtins
 import functools
 
 from .context import Context
+from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .modules import BUILTINS_MODULE, MODULES
-from .object_ import Class, Object, ObjectKind, PlainObject, Scope, ScopeKind
+from .object_ import Class, Object, PlainObject, UnknownObject
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -19,6 +20,7 @@ from .object_path import (
     LocalObjectPath,
     ModulePath,
 )
+from .scope import Scope
 
 
 @functools.singledispatch
@@ -31,7 +33,7 @@ def construct_object_from_expression_node(
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+    return UnknownObject(module_path, local_path)
 
 
 @construct_object_from_expression_node.register(ast.Attribute)
@@ -54,7 +56,7 @@ def _(
             return value_object.get_attribute(attribute_name)
         except KeyError:
             raise AttributeError(attribute_name) from None
-    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+    return UnknownObject(module_path, local_path)
 
 
 @construct_object_from_expression_node.register(ast.Call)
@@ -71,7 +73,7 @@ def _(
         node.func, scope, *parent_scopes, context=context
     )
     if callable_object is None:
-        return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+        return UnknownObject(module_path, local_path)
     if callable_object.module_path == BUILTINS_MODULE_PATH and (
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
@@ -153,7 +155,7 @@ def _(
                 context=context,
             )
         except EVALUATION_EXCEPTIONS:
-            return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+            return UnknownObject(module_path, local_path)
         if isinstance(named_tuple_field_names, str):
             named_tuple_field_names = named_tuple_field_names.replace(
                 ',', ' '
@@ -174,14 +176,13 @@ def _(
         for field_name in named_tuple_field_names:
             named_tuple_object.set_attribute(
                 field_name,
-                PlainObject(
-                    ObjectKind.UNKNOWN,
+                UnknownObject(
                     named_tuple_object.module_path,
                     named_tuple_object.local_path.join(field_name),
                 ),
             )
         return named_tuple_object
-    return PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+    return UnknownObject(module_path, local_path)
 
 
 @construct_object_from_expression_node.register(ast.Dict)
@@ -257,7 +258,7 @@ def _(
             )
         )
         is not None
-        else PlainObject(ObjectKind.UNKNOWN, module_path, local_path)
+        else UnknownObject(module_path, local_path)
     )
 
 

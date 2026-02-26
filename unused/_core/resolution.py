@@ -11,9 +11,9 @@ from typing_extensions import Self
 from unused._core.context import Context, FunctionCallContext
 
 from .attribute_mapping import AttributeMapping
+from .enums import ObjectKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
-from .object_ import ObjectKind, Scope
 from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
@@ -21,6 +21,7 @@ from .object_path import (
     SYS_MODULES_LOCAL_OBJECT_PATH,
     SYS_MODULE_PATH,
 )
+from .scope import Scope
 
 
 class ResolvedAssignmentTargetSplitPath:

@@ -25,6 +25,7 @@ from typing_extensions import override
 
 from .construction import construct_object_from_expression_node
 from .context import Context, FunctionCallContext, NullContext
+from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
@@ -34,10 +35,8 @@ from .object_ import (
     Class,
     Module,
     Object,
-    ObjectKind,
     PlainObject,
-    Scope,
-    ScopeKind,
+    UnknownObject,
 )
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
@@ -53,6 +52,7 @@ from .resolution import (
     combine_resolved_assignment_target_with_value,
     resolve_assignment_target,
 )
+from .scope import Scope
 from .utils import ensure_type
 
 FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: Final = '__defaults__'
@@ -148,8 +148,7 @@ def _does_function_modify_caller_global_state(
             positional_parameter_name = positional_parameter_node.arg
             function_scope.set_object(
                 positional_parameter_name,
-                PlainObject(
-                    ObjectKind.UNKNOWN,
+                UnknownObject(
                     function_object.module_path,
                     function_object.local_path.join(positional_parameter_name),
                 ),
@@ -174,8 +173,7 @@ def _does_function_modify_caller_global_state(
             )
             function_scope.set_object(
                 defaulted_positional_parameter_name,
-                PlainObject(
-                    ObjectKind.UNKNOWN,
+                UnknownObject(
                     function_object.module_path,
                     function_object.local_path.join(
                         defaulted_positional_parameter_name
@@ -190,8 +188,7 @@ def _does_function_modify_caller_global_state(
             keyword_parameter_name = keyword_parameter_node.arg
             function_scope.set_object(
                 keyword_parameter_name,
-                PlainObject(
-                    ObjectKind.UNKNOWN,
+                UnknownObject(
                     function_object.module_path,
                     function_object.local_path.join(keyword_parameter_name),
                 ),
@@ -581,8 +578,7 @@ class ScopeParser(ast.NodeVisitor):
         ):
             self._set_target_object_split_path(
                 target_object_split_path,
-                PlainObject(
-                    ObjectKind.UNKNOWN,
+                UnknownObject(
                     self._scope.module_path,
                     target_object_split_path.combine_local(),
                 ),
@@ -731,8 +727,7 @@ class ScopeParser(ast.NodeVisitor):
                     )
                     value = object_.as_object()
                 else:
-                    object_ = PlainObject(
-                        ObjectKind.UNKNOWN,
+                    object_ = UnknownObject(
                         top_submodule_object.module_path,
                         LocalObjectPath(alias.name),
                     )
@@ -781,8 +776,7 @@ class ScopeParser(ast.NodeVisitor):
             (
                 value_object
                 if value_object is not None
-                else PlainObject(
-                    ObjectKind.UNKNOWN,
+                else UnknownObject(
                     self._scope.module_path,
                     self._scope.local_path.join(target_name),
                 )
@@ -1015,8 +1009,7 @@ class ScopeParser(ast.NodeVisitor):
                     if isinstance(
                         resolved_target, ResolvedAssignmentTargetSplitPath
                     )
-                    else PlainObject(
-                        ObjectKind.UNKNOWN,
+                    else UnknownObject(
                         target_object_split_path.module,
                         target_object_split_path.combine_local(),
                     )
@@ -1063,7 +1056,7 @@ class ScopeParser(ast.NodeVisitor):
     def _set_target_object_split_path(
         self,
         target_object_split_path: ResolvedAssignmentTargetSplitPath,
-        value_object: Class | Module | PlainObject,
+        value_object: Object,
     ) -> None:
         if (
             len(target_object_split_path.absolute.components)
@@ -1210,8 +1203,7 @@ class ScopeParser(ast.NodeVisitor):
                     TYPES_MODULE.get_nested_attribute(
                         TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                     ),
-                    PlainObject(
-                        ObjectKind.UNKNOWN,
+                    UnknownObject(
                         decorator_object.module_path,
                         decorator_object.local_path,
                     ),

@@ -9,8 +9,8 @@ from typing import Any, Final
 
 from .context import Context
 from .lookup import lookup_object_by_expression_node
-from .object_ import Scope
 from .object_path import BUILTINS_MODULE_PATH, LocalObjectPath, ModulePath
+from .scope import Scope
 
 EVALUATION_EXCEPTIONS: Final = (
     AttributeError,

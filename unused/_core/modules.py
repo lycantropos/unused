@@ -11,6 +11,7 @@ from typing import Any, Final, Literal, TypeAlias
 from typing_extensions import TypeIs
 
 from .dependency_node import DependencyNode
+from .enums import ObjectKind, ScopeKind
 from .missing import MISSING
 from .object_ import (
     CLASS_OBJECT_KINDS,
@@ -18,12 +19,10 @@ from .object_ import (
     ClassObjectKind,
     Module,
     Object,
-    ObjectKind,
     PLAIN_OBJECT_KINDS,
     PlainObject,
     PlainObjectKind,
-    Scope,
-    ScopeKind,
+    UnknownObject,
 )
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
@@ -38,6 +37,7 @@ from .object_path import (
     TYPES_MODULE_PATH,
 )
 from .safety import is_safe
+from .scope import Scope
 from .utils import ensure_type
 
 ObjectPath: TypeAlias = tuple[ModulePath, LocalObjectPath]
@@ -531,6 +531,10 @@ def _dependency_node_to_object(
     object_kind = dependency_node.object_kind
     if object_kind is ObjectKind.STATIC_MODULE:
         return MODULES[dependency_node.module_path]
+    if object_kind is ObjectKind.UNKNOWN:
+        return UnknownObject(
+            dependency_node.module_path, dependency_node.local_path
+        )
     if _is_cls_object_kind(object_kind):
         return Class(
             Scope(

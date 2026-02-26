@@ -5,8 +5,8 @@ from typing import Any
 
 from typing_extensions import Self
 
+from .enums import ObjectKind
 from .missing import Missing
-from .object_ import ObjectKind
 from .object_path import LocalObjectPath, ModulePath
 
 

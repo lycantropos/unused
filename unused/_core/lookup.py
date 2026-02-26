@@ -4,8 +4,9 @@ import ast
 import functools
 
 from .context import Context, FunctionCallContext
+from .enums import ObjectKind, ScopeKind
 from .modules import MODULES
-from .object_ import Class, Object, ObjectKind, PlainObject, Scope, ScopeKind
+from .object_ import Class, Object, PlainObject
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -14,6 +15,7 @@ from .object_path import (
     SYS_MODULES_LOCAL_OBJECT_PATH,
     SYS_MODULE_PATH,
 )
+from .scope import Scope
 
 
 @functools.singledispatch
