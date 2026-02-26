@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Container
 from enum import Enum
-from typing import Any, Final, TypeAlias, TypeVar
+from typing import Any, Final, Literal, TypeAlias, TypeVar
 
 from .attribute_mapping import AttributeMapping
 from .mapping_chain import MappingChain
@@ -15,7 +16,6 @@ class ObjectKind(str, Enum):
     CLASS = 'CLASS'
     DYNAMIC_MODULE = 'DYNAMIC_MODULE'
     EXTENSION_MODULE = 'EXTENSION_MODULE'
-    FUNCTION_SCOPE = 'FUNCTION_SCOPE'
     INSTANCE = 'INSTANCE'
     INSTANCE_ROUTINE = 'INSTANCE_ROUTINE'
     METACLASS = 'METACLASS'
@@ -234,9 +234,9 @@ class Scope:
         try:
             return self._objects[name]
         except KeyError:
-            for sub_namespace in self._included_objects:
+            for included_object in self._included_objects:
                 try:
-                    return sub_namespace.strict_get_attribute(name)
+                    return included_object.strict_get_attribute(name)
                 except KeyError:
                     continue
             raise
@@ -299,7 +299,7 @@ class Scope:
 
 class PlainObject:
     @property
-    def kind(self, /) -> ObjectKind:
+    def kind(self, /) -> PlainObjectKind:
         return self._kind
 
     @property
@@ -338,7 +338,7 @@ class PlainObject:
 
     def get_attribute(self, name: str, /) -> Object:
         try:
-            candidate = self._attributes[name]
+            return self._objects[name]
         except KeyError:
             for included_object in self._included_objects:
                 try:
@@ -347,14 +347,8 @@ class PlainObject:
                     continue
                 else:
                     if candidate.kind is ObjectKind.ROUTINE and (
-                        (
-                            self._kind is ObjectKind.CLASS
-                            and included_object.kind is ObjectKind.METACLASS
-                        )
-                        or (
-                            self._kind is ObjectKind.INSTANCE
-                            and included_object.kind is ObjectKind.CLASS
-                        )
+                        self._kind is ObjectKind.INSTANCE
+                        and included_object.kind is ObjectKind.CLASS
                     ):
                         candidate = type(self)(
                             ObjectKind.INSTANCE_ROUTINE,
@@ -364,42 +358,19 @@ class PlainObject:
                         )
                     return candidate
             if self.kind in (
-                ObjectKind.BUILTIN_MODULE,
-                ObjectKind.DYNAMIC_MODULE,
-                ObjectKind.EXTENSION_MODULE,
                 ObjectKind.ROUTINE_CALL,
                 ObjectKind.INSTANCE,
                 ObjectKind.PROPERTY,
                 ObjectKind.UNKNOWN,
-                ObjectKind.UNKNOWN_CLASS,
             ):
-                assert name not in self._attributes
-                self._attributes[name] = result = type(self)(
+                assert name not in self._objects
+                self._objects[name] = result = type(self)(
                     ObjectKind.UNKNOWN,
                     self.module_path,
                     self.local_path.join(name),
                 )
                 return result
             raise
-        else:
-            if (
-                self._kind is ObjectKind.CLASS
-                and candidate.kind is ObjectKind.ROUTINE
-                and (
-                    name
-                    in (
-                        object.__init_subclass__.__name__,
-                        object.__new__.__name__,
-                    )
-                )
-            ):
-                candidate = type(self)(
-                    ObjectKind.INSTANCE_ROUTINE,
-                    self._module_path,
-                    self._local_path.join(name),
-                    candidate,
-                )
-            return candidate
 
     def instance_routine_to_routine(self, /) -> Object:
         assert self._kind is ObjectKind.INSTANCE_ROUTINE
@@ -419,7 +390,7 @@ class PlainObject:
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
-        self._attributes[name] = object_
+        self._objects[name] = object_
 
     def set_nested_attribute(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -432,7 +403,7 @@ class PlainObject:
 
     def set_value(self, name: str, value: Any | Missing, /) -> None:
         assert isinstance(name, str), name
-        assert name in self._attributes
+        assert name in self._objects
         if value is MISSING:
             assert name in self._values
             self._values.pop(name, None)
@@ -456,7 +427,7 @@ class PlainObject:
 
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
-            return self._attributes[name]
+            return self._objects[name]
         except KeyError:
             for included_object in self._included_objects:
                 try:
@@ -465,19 +436,19 @@ class PlainObject:
                     continue
             raise
 
-    _attributes: dict[str, Object]
     _included_objects: list[Object]
-    _kind: ObjectKind
+    _kind: PlainObjectKind
     _module_path: ModulePath
     _local_path: LocalObjectPath
+    _objects: dict[str, Object]
     _values: dict[str, Any]
 
     __slots__ = (
-        '_attributes',
         '_included_objects',
         '_kind',
         '_local_path',
         '_module_path',
+        '_objects',
         '_values',
     )
 
@@ -487,7 +458,7 @@ class PlainObject:
                 self._kind is other._kind
                 and self._module_path == other._module_path
                 and self._local_path == other._local_path
-                and self._attributes == other._attributes
+                and self._objects == other._objects
                 and self._values == other._values
                 and self._included_objects == other._included_objects
             )
@@ -497,21 +468,21 @@ class PlainObject:
 
     def __init__(
         self,
-        kind: ObjectKind,
+        kind: PlainObjectKind,
         module_path: ModulePath,
         local_path: LocalObjectPath,
         /,
         *included_object: Object,
     ) -> None:
-        assert kind not in CLASS_OBJECT_KINDS
+        assert kind in PLAIN_OBJECT_KINDS
         (
-            self._attributes,
             self._included_objects,
             self._kind,
             self._local_path,
             self._module_path,
+            self._objects,
             self._values,
-        ) = {}, list(included_object), kind, local_path, module_path, {}
+        ) = list(included_object), kind, local_path, module_path, {}, {}
 
     def __repr__(self, /) -> str:
         return (
@@ -525,7 +496,14 @@ class PlainObject:
 
 class Module:
     @property
-    def kind(self, /) -> ObjectKind:
+    def kind(
+        self, /
+    ) -> Literal[
+        ObjectKind.BUILTIN_MODULE,
+        ObjectKind.DYNAMIC_MODULE,
+        ObjectKind.EXTENSION_MODULE,
+        ObjectKind.STATIC_MODULE,
+    ]:
         scope_kind = self._scope.kind
         if scope_kind is ScopeKind.BUILTIN_MODULE:
             return ObjectKind.BUILTIN_MODULE
@@ -571,11 +549,6 @@ class Module:
         try:
             return self._scope.get_object(name)
         except KeyError:
-            for included_object in self._included_objects:
-                try:
-                    return included_object.get_attribute(name)
-                except KeyError:
-                    continue
             if self.kind in (
                 ObjectKind.BUILTIN_MODULE,
                 ObjectKind.DYNAMIC_MODULE,
@@ -613,33 +586,21 @@ class Module:
         self._scope.set_nested_value(local_path, value)
 
     def strict_get_attribute(self, name: str, /) -> Object:
-        try:
-            return self._scope.strict_get_object(name)
-        except KeyError:
-            for included_object in self._included_objects:
-                try:
-                    return included_object.strict_get_attribute(name)
-                except KeyError:
-                    continue
-            raise
+        return self._scope.strict_get_object(name)
 
     _scope: Scope
-    _included_objects: list[Object]
 
-    __slots__ = '_included_objects', '_scope'
+    __slots__ = ('_scope',)
 
     def __eq__(self, other: Any, /) -> Any:
         return (
-            (
-                self._scope == other._scope
-                and self._included_objects == other._included_objects
-            )
+            self._scope == other._scope
             if isinstance(other, type(self))
             else NotImplemented
         )
 
     def __init__(self, scope: Scope, /) -> None:
-        self._included_objects, self._scope = [], scope
+        self._scope = scope
 
     def __repr__(self, /) -> str:
         return f'{type(self).__qualname__}({self._scope!r})'
@@ -647,7 +608,7 @@ class Module:
 
 class Class:
     @property
-    def kind(self, /) -> ObjectKind:
+    def kind(self, /) -> ClassObjectKind:
         if self._scope.kind is ScopeKind.CLASS:
             return ObjectKind.CLASS
         if self._scope.kind is ScopeKind.METACLASS:
@@ -861,10 +822,29 @@ class Class:
 Object: TypeAlias = Class | Module | PlainObject
 
 
-CLASS_OBJECT_KINDS: Final = (
+ClassObjectKind: TypeAlias = Literal[
+    ObjectKind.CLASS, ObjectKind.METACLASS, ObjectKind.UNKNOWN_CLASS
+]
+CLASS_OBJECT_KINDS: Final[Container[ClassObjectKind]] = (
     ObjectKind.CLASS,
     ObjectKind.METACLASS,
     ObjectKind.UNKNOWN_CLASS,
+)
+PlainObjectKind: TypeAlias = Literal[
+    ObjectKind.INSTANCE,
+    ObjectKind.INSTANCE_ROUTINE,
+    ObjectKind.PROPERTY,
+    ObjectKind.ROUTINE,
+    ObjectKind.ROUTINE_CALL,
+    ObjectKind.UNKNOWN,
+]
+PLAIN_OBJECT_KINDS: Final[Container[PlainObjectKind]] = (
+    ObjectKind.INSTANCE,
+    ObjectKind.INSTANCE_ROUTINE,
+    ObjectKind.PROPERTY,
+    ObjectKind.ROUTINE,
+    ObjectKind.ROUTINE_CALL,
+    ObjectKind.UNKNOWN,
 )
 CLASS_SCOPE_KINDS: Final = (
     ScopeKind.CLASS,
