@@ -401,25 +401,6 @@ class PlainObject:
                 )
             return candidate
 
-    def include_object(self, object_: Object, /) -> None:
-        assert object_.kind in (
-            ObjectKind.CLASS,
-            ObjectKind.INSTANCE,
-            ObjectKind.BUILTIN_MODULE,
-            ObjectKind.DYNAMIC_MODULE,
-            ObjectKind.EXTENSION_MODULE,
-            ObjectKind.METACLASS,
-            ObjectKind.ROUTINE,
-            ObjectKind.STATIC_MODULE,
-            ObjectKind.UNKNOWN,
-            ObjectKind.UNKNOWN_CLASS,
-        ), (self, object_)
-        assert self.kind is not ObjectKind.UNKNOWN, (self, object_)
-        assert isinstance(object_, Object), (self, object_)
-        assert object_ is not self, (self, object_)
-        assert object_ not in self._included_objects, (self, object_)
-        self._included_objects.append(object_)
-
     def instance_routine_to_routine(self, /) -> Object:
         assert self._kind is ObjectKind.INSTANCE_ROUTINE
         (result,) = self._included_objects
@@ -609,25 +590,6 @@ class Module:
                 return result
             raise
 
-    def include_object(self, object_: Object, /) -> None:
-        assert object_.kind in (
-            ObjectKind.CLASS,
-            ObjectKind.INSTANCE,
-            ObjectKind.BUILTIN_MODULE,
-            ObjectKind.DYNAMIC_MODULE,
-            ObjectKind.EXTENSION_MODULE,
-            ObjectKind.METACLASS,
-            ObjectKind.ROUTINE,
-            ObjectKind.STATIC_MODULE,
-            ObjectKind.UNKNOWN,
-            ObjectKind.UNKNOWN_CLASS,
-        ), (self, object_)
-        assert self.kind is not ObjectKind.UNKNOWN, (self, object_)
-        assert isinstance(object_, Object), (self, object_)
-        assert object_ is not self, (self, object_)
-        assert object_ not in self._included_objects, (self, object_)
-        self._included_objects.append(object_)
-
     def safe_delete_value(self, name: str, /) -> bool:
         return self._scope.safe_delete_value(name)
 
@@ -785,18 +747,6 @@ class Class:
                     candidate,
                 )
             return candidate
-
-    def include_object(self, object_: Object, /) -> None:
-        assert object_.kind in (
-            ObjectKind.CLASS,
-            ObjectKind.METACLASS,
-            ObjectKind.UNKNOWN,
-            ObjectKind.UNKNOWN_CLASS,
-        ), (self, object_)
-        assert isinstance(object_, Object), (self, object_)
-        assert object_ is not self, (self, object_)
-        assert object_ not in self._bases, (self, object_)
-        self._bases.append(object_)
 
     def safe_delete_value(self, name: str, /) -> bool:
         assert isinstance(name, str), name

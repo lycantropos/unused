@@ -28,12 +28,7 @@ from .context import Context, FunctionCallContext, NullContext
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
-from .modules import (
-    BUILTINS_MODULE,
-    MODULES,
-    TYPES_MODULE_NAMESPACE,
-    parse_modules,
-)
+from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE, parse_modules
 from .object_ import (
     CLASS_SCOPE_KINDS,
     Class,
@@ -1221,7 +1216,7 @@ class ScopeParser(ast.NodeVisitor):
                     ObjectKind.ROUTINE,
                     self._scope.module_path,
                     self._scope.local_path.join(function_name),
-                    TYPES_MODULE_NAMESPACE.get_nested_attribute(
+                    TYPES_MODULE.get_nested_attribute(
                         TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                     ),
                     PlainObject(
@@ -1250,7 +1245,7 @@ class ScopeParser(ast.NodeVisitor):
                 ObjectKind.ROUTINE,
                 self._scope.module_path,
                 self._scope.local_path.join(function_name),
-                TYPES_MODULE_NAMESPACE.get_nested_attribute(
+                TYPES_MODULE.get_nested_attribute(
                     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                 ),
             )
@@ -1552,7 +1547,7 @@ def _load_module_path_namespace(
         )
         result.set_attribute(
             '__class__',
-            TYPES_MODULE_NAMESPACE.get_nested_attribute(
+            TYPES_MODULE.get_nested_attribute(
                 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH
             ),
         )
