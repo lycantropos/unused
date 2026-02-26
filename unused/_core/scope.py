@@ -7,12 +7,7 @@ from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
 from .mapping_chain import MappingChain
 from .missing import MISSING, Missing
-from .object_ import (
-    Object,
-    PlainObject,
-    UnknownObject,
-    object_get_attribute as _object_get_attribute,
-)
+from .object_ import Object, PlainObject, UnknownObject, object_get_attribute
 from .object_path import LocalObjectPath, ModulePath
 
 _T = TypeVar('_T')
@@ -66,7 +61,7 @@ class Scope:
         assert len(local_path.components) > 0, local_path
         first_component, *rest_components = local_path.components
         return functools.reduce(
-            _object_get_attribute,
+            object_get_attribute,
             rest_components,
             self.get_object(first_component),
         )
@@ -162,7 +157,7 @@ class Scope:
         *first_components, last_component = local_path.components
         if len(first_components) > 0:
             parent_object = functools.reduce(
-                _object_get_attribute,
+                object_get_attribute,
                 first_components[1:],
                 self.get_object(first_components[0]),
             )
