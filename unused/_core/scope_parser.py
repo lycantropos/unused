@@ -698,7 +698,7 @@ class ScopeParser(ast.NodeVisitor):
                     ).components
                 )
                 components += submodule_relative_path_components
-                if is_package:
+                if is_package and node.level == 1:
                     self._scope.set_object(
                         submodule_relative_path_components[0],
                         self._resolve_absolute_module_path(
