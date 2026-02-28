@@ -78,6 +78,7 @@ def _(
     if callable_object.module_path == BUILTINS_MODULE_PATH and (
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
+        assert callable_object.kind is ObjectKind.METACLASS, callable_object
         first_argument_object = construct_object_from_expression_node(
             node.args[0],
             scope,
@@ -134,6 +135,7 @@ def _(
         callable_object.module_path == BUILTINS_MODULE_PATH
         and callable_object.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
+        assert callable_object.kind is ObjectKind.ROUTINE, callable_object
         return MODULES[scope.module_path].get_attribute(DICT_FIELD_NAME)
     if (
         callable_object.kind is ObjectKind.ROUTINE

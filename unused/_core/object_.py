@@ -93,7 +93,6 @@ class Class:
                 except KeyError:
                     continue
             if (metaclass := self._metaclass) is not MISSING:
-                assert self.kind is ObjectKind.CLASS, self
                 try:
                     candidate = metaclass.get_attribute(name)
                 except KeyError:
@@ -223,6 +222,7 @@ class Class:
         self, scope: Scope, /, *bases: Object, metaclass: Object | Missing
     ) -> None:
         assert scope.kind in CLASS_SCOPE_KINDS, scope
+        assert metaclass is MISSING or scope.kind is ScopeKind.CLASS, scope
         (
             self._attributes,
             self._bases,
@@ -615,12 +615,12 @@ class Call:
 
 class Method:
     @property
-    def kind(self, /) -> Literal[ObjectKind.METHOD]:
-        return ObjectKind.METHOD
-
-    @property
     def instance(self, /) -> Object:
         return self._instance
+
+    @property
+    def kind(self, /) -> Literal[ObjectKind.METHOD]:
+        return ObjectKind.METHOD
 
     @property
     def module_path(self, /) -> ModulePath:
