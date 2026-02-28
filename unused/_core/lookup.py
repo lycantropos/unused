@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import ast
 import functools
+import uuid
 
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
 from .missing import MISSING
 from .modules import MODULES
-from .object_ import Class, Object, PlainObject
+from .object_ import Call, Class, Object, PlainObject
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -83,10 +84,53 @@ def _(
             metaclass=MISSING,
         )
     if callable_object.kind is ObjectKind.ROUTINE:
-        return PlainObject(
-            ObjectKind.ROUTINE_CALL,
-            callable_object.module_path,
-            callable_object.local_path,
+        from .construction import construct_object_from_expression_node
+
+        local_path = scope.local_path.join('__' + uuid.uuid4().hex)
+        return Call(
+            scope.module_path,
+            local_path,
+            callable_object,
+            [
+                construct_object_from_expression_node(
+                    argument_node.value,
+                    scope,
+                    *parent_scopes,
+                    context=context,
+                    local_path=local_path.join(f'__args_{argument_index}__'),
+                    module_path=scope.module_path,
+                )
+                if isinstance(argument_node, ast.Starred)
+                else (
+                    construct_object_from_expression_node(
+                        argument_node,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                        local_path=local_path.join(
+                            f'__args_{argument_index}__'
+                        ),
+                        module_path=scope.module_path,
+                    ),
+                )
+                for argument_index, argument_node in enumerate(node.args)
+            ],
+            [
+                (
+                    argument_node.arg,
+                    construct_object_from_expression_node(
+                        argument_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                        local_path=scope.local_path.join(
+                            f'__args_{argument_index}__'
+                        ),
+                        module_path=scope.module_path,
+                    ),
+                )
+                for argument_index, argument_node in enumerate(node.keywords)
+            ],
         )
     return None
 

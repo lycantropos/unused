@@ -10,7 +10,7 @@ from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .missing import MISSING
 from .modules import BUILTINS_MODULE, MODULES
-from .object_ import Class, Object, PlainObject, UnknownObject
+from .object_ import Call, Class, Object, PlainObject, UnknownObject
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -78,8 +78,13 @@ def _(
     if callable_object.module_path == BUILTINS_MODULE_PATH and (
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
-        first_argument_object = lookup_object_by_expression_node(
-            node.args[0], scope, *parent_scopes, context=context
+        first_argument_object = construct_object_from_expression_node(
+            node.args[0],
+            scope,
+            *parent_scopes,
+            context=context,
+            local_path=local_path.join('__args_0__'),
+            module_path=module_path,
         )
         return (
             Class(
@@ -144,7 +149,7 @@ def _(
         )
         assert argument_object is not None
         return argument_object.get_attribute(DICT_FIELD_NAME)
-    if (callable_object.module_path == COLLECTIONS_MODULE_PATH) and (
+    if callable_object.module_path == COLLECTIONS_MODULE_PATH and (
         callable_object.local_path == COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH
     ):
         _, namedtuple_field_name_node = node.args
@@ -183,7 +188,47 @@ def _(
                 ),
             )
         return named_tuple_object
-    return UnknownObject(module_path, local_path)
+    return Call(
+        module_path,
+        local_path,
+        callable_object,
+        [
+            construct_object_from_expression_node(
+                argument_node.value,
+                scope,
+                *parent_scopes,
+                context=context,
+                local_path=local_path.join(f'__args_{argument_index}__'),
+                module_path=module_path,
+            )
+            if isinstance(argument_node, ast.Starred)
+            else (
+                construct_object_from_expression_node(
+                    argument_node,
+                    scope,
+                    *parent_scopes,
+                    context=context,
+                    local_path=local_path.join(f'__args_{argument_index}__'),
+                    module_path=module_path,
+                ),
+            )
+            for argument_index, argument_node in enumerate(node.args)
+        ],
+        [
+            (
+                argument_node.arg,
+                construct_object_from_expression_node(
+                    argument_node.value,
+                    scope,
+                    *parent_scopes,
+                    context=context,
+                    local_path=local_path.join(f'__args_{argument_index}__'),
+                    module_path=module_path,
+                ),
+            )
+            for argument_index, argument_node in enumerate(node.keywords)
+        ],
+    )
 
 
 @construct_object_from_expression_node.register(ast.Dict)

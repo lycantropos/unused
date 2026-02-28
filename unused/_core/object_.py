@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Container, Sequence
+from collections.abc import Sequence
 from typing import (
     Any,
     ClassVar,
@@ -380,7 +380,7 @@ class PlainObject:
                     continue
             raise
 
-    _included_objects: list[Object]
+    _included_objects: Sequence[Object]
     _kind: PlainObjectKind
     _module_path: ModulePath
     _local_path: LocalObjectPath
@@ -426,7 +426,7 @@ class PlainObject:
             self._module_path,
             self._objects,
             self._values,
-        ) = list(included_object), kind, local_path, module_path, {}, {}
+        ) = included_object, kind, local_path, module_path, {}, {}
 
     def __repr__(self, /) -> str:
         return (
@@ -434,6 +434,181 @@ class PlainObject:
             f'{self._kind!r}, {self._module_path!r}, {self._local_path!r}'
             f'{", " * bool(self._included_objects)}'
             f'{", ".join(map(repr, self._included_objects))}'
+            ')'
+        )
+
+
+class Call:
+    @property
+    def callable_(self, /) -> Object:
+        return self._callable
+
+    @property
+    def kind(self, /) -> Literal[ObjectKind.ROUTINE_CALL]:
+        return ObjectKind.ROUTINE_CALL
+
+    @property
+    def local_path(self, /) -> LocalObjectPath:
+        return self._local_path
+
+    @property
+    def module_path(self, /) -> ModulePath:
+        return self._module_path
+
+    def as_object(self, /) -> AttributeMapping:
+        return AttributeMapping(MappingChain(self._values))
+
+    def get_mutable_attribute(self, name: str, /) -> MutableObject:
+        return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
+
+    def get_mutable_nested_attribute(
+        self, local_path: LocalObjectPath, /
+    ) -> MutableObject:
+        return ensure_type(
+            self.get_nested_attribute(local_path), MUTABLE_OBJECT_CLASSES
+        )
+
+    def get_nested_attribute(self, local_path: LocalObjectPath, /) -> Object:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        initial_object: Object = self
+        return functools.reduce(
+            object_get_attribute, local_path.components, initial_object
+        )
+
+    def get_value(self, name: str, /) -> Any:
+        assert isinstance(name, str), name
+        return self._values[name]
+
+    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
+        assert isinstance(name, str), name
+        return self._values.get(name, default)
+
+    def get_attribute(self, name: str, /) -> Object:
+        try:
+            return self._objects[name]
+        except KeyError:
+            assert name not in self._objects
+            self._objects[name] = result = UnknownObject(
+                self.module_path, self.local_path.join(name)
+            )
+            return result
+
+    def safe_delete_value(self, name: str, /) -> bool:
+        assert isinstance(name, str), name
+        return self._values.pop(name, MISSING) is not MISSING
+
+    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        return self.get_mutable_nested_attribute(
+            local_path.parent
+        ).safe_delete_value(local_path.components[-1])
+
+    def set_attribute(self, name: str, object_: Object, /) -> None:
+        assert isinstance(name, str), (name, object_)
+        assert isinstance(object_, Object), (name, object_)
+        self._objects[name] = object_
+
+    def set_nested_attribute(
+        self, local_path: LocalObjectPath, object_: Object, /
+    ) -> None:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        assert isinstance(object_, Object), object_
+        self.get_mutable_nested_attribute(local_path.parent).set_attribute(
+            local_path.components[-1], object_
+        )
+
+    def set_value(self, name: str, value: Any | Missing, /) -> None:
+        assert isinstance(name, str), name
+        assert name in self._objects
+        if value is MISSING:
+            assert name in self._values
+            self._values.pop(name, None)
+        else:
+            self._values[name] = value
+
+    def set_nested_value(
+        self, local_path: LocalObjectPath, value: Any, /
+    ) -> None:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        assert isinstance(self.get_nested_attribute(local_path), Object)
+        assert value is not MISSING
+        object_: MutableObject = self
+        for component in local_path.components[:-1]:
+            next_object = object_.get_mutable_attribute(component)
+            if (
+                object_.get_value_or_else(component, default=MISSING)
+                is MISSING
+            ):
+                object_.set_value(component, next_object.as_object())
+            object_ = next_object
+        object_.set_value(local_path.components[-1], value)
+
+    def strict_get_attribute(self, name: str, /) -> Object:
+        return self._objects[name]
+
+    _keyword_arguments: Sequence[tuple[str | None, Object]]
+    _local_path: LocalObjectPath
+    _module_path: ModulePath
+    _callable: Object
+    _objects: dict[str, Object]
+    _positional_arguments: Sequence[tuple[Object] | Object]
+    _values: dict[str, Any]
+
+    __slots__ = (
+        '_callable',
+        '_keyword_arguments',
+        '_local_path',
+        '_module_path',
+        '_objects',
+        '_positional_arguments',
+        '_values',
+    )
+
+    def __eq__(self, other: Any, /) -> Any:
+        return (
+            (
+                self._module_path == other._module_path
+                and self._positional_arguments == other._positional_arguments
+                and self._callable == other._callable
+                and self._keyword_arguments == other._keyword_arguments
+                and self._objects == other._objects
+                and self._values == other._values
+            )
+            if isinstance(other, type(self))
+            else NotImplemented
+        )
+
+    def __init__(
+        self,
+        module_path: ModulePath,
+        local_path: LocalObjectPath,
+        callable_: Object,
+        positional_arguments: Sequence[tuple[Object] | Object],
+        keyword_arguments: Sequence[tuple[str | None, Object]],
+        /,
+    ) -> None:
+        (
+            self._keyword_arguments,
+            self._local_path,
+            self._module_path,
+            self._objects,
+            self._positional_arguments,
+            self._callable,
+            self._values,
+        ) = (
+            keyword_arguments,
+            local_path,
+            module_path,
+            {},
+            positional_arguments,
+            callable_,
+            {},
+        )
+
+    def __repr__(self, /) -> str:
+        return (
+            f'{type(self).__qualname__}('
+            f'{self._module_path!r}, {self._local_path!r}'
             ')'
         )
 
@@ -970,13 +1145,14 @@ class UnknownObject:
 
 
 MutableObject: TypeAlias = (
-    Class | Module | PlainObject | Routine | UnknownObject
+    Class | Module | PlainObject | Routine | Call | UnknownObject
 )
 MUTABLE_OBJECT_CLASSES: Final = (
     Class,
     Module,
     PlainObject,
     Routine,
+    Call,
     UnknownObject,
 )
 ImmutableObject: TypeAlias = Method
@@ -986,19 +1162,13 @@ Object: TypeAlias = ImmutableObject | MutableObject
 ClassObjectKind: TypeAlias = Literal[
     ObjectKind.CLASS, ObjectKind.METACLASS, ObjectKind.UNKNOWN_CLASS
 ]
-CLASS_OBJECT_KINDS: Final[Container[ClassObjectKind]] = (
+CLASS_OBJECT_KINDS: Final = (
     ObjectKind.CLASS,
     ObjectKind.METACLASS,
     ObjectKind.UNKNOWN_CLASS,
 )
-PlainObjectKind: TypeAlias = Literal[
-    ObjectKind.INSTANCE, ObjectKind.PROPERTY, ObjectKind.ROUTINE_CALL
-]
-PLAIN_OBJECT_KINDS: Final[Container[PlainObjectKind]] = (
-    ObjectKind.INSTANCE,
-    ObjectKind.PROPERTY,
-    ObjectKind.ROUTINE_CALL,
-)
+PlainObjectKind: TypeAlias = Literal[ObjectKind.INSTANCE, ObjectKind.PROPERTY]
+PLAIN_OBJECT_KINDS: Final = (ObjectKind.INSTANCE, ObjectKind.PROPERTY)
 CLASS_SCOPE_KINDS: Final = (
     ScopeKind.CLASS,
     ScopeKind.METACLASS,

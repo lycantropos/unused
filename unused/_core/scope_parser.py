@@ -365,6 +365,26 @@ class ScopeParser(ast.NodeVisitor):
         if callable_object is None:
             return
         if (
+            callable_object.kind is ObjectKind.ROUTINE
+            and callable_object.module_path == BUILTINS_MODULE_PATH
+            and (
+                callable_object.local_path
+                == LocalObjectPath.from_object_name(
+                    builtins.__import__.__qualname__
+                )
+            )
+        ):
+            try:
+                module_name = self._evaluate_expression_node(node.args[0])
+            except EVALUATION_EXCEPTIONS:
+                pass
+            else:
+                assert isinstance(module_name, str), ast.unparse(node)
+                self._resolve_absolute_module_path(
+                    ModulePath.from_module_name(module_name)
+                )
+            return
+        if (
             callable_object.local_path
             == LocalObjectPath(DICT_FIELD_NAME, 'update')
         ) and (
@@ -744,8 +764,10 @@ class ScopeParser(ast.NodeVisitor):
         try:
             condition_satisfied = self._evaluate_expression_node(node.test)
         except EVALUATION_EXCEPTIONS:
-            with contextlib.suppress(*EVALUATION_EXCEPTIONS):
-                for body_node in chain(node.body, node.orelse):
+            for body_node in chain(node.body, node.orelse):
+                with contextlib.suppress(
+                    ModuleNotFoundError, *EVALUATION_EXCEPTIONS
+                ):
                     self.visit(body_node)
         else:
             for body_node in node.body if condition_satisfied else node.orelse:
@@ -1185,9 +1207,13 @@ class ScopeParser(ast.NodeVisitor):
                 )
             ):
                 return
-            if decorator_object.module_path == FUNCTOOLS_MODULE_PATH and (
-                decorator_object.local_path
-                == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
+            if (
+                decorator_object.kind is ObjectKind.ROUTINE
+                and decorator_object.module_path == FUNCTOOLS_MODULE_PATH
+                and (
+                    decorator_object.local_path
+                    == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
+                )
             ):
                 function_object = Routine(
                     self._scope.module_path,
@@ -1204,9 +1230,14 @@ class ScopeParser(ast.NodeVisitor):
                     ),
                 )
                 break
-            if decorator_object.module_path == FUNCTOOLS_MODULE_PATH and (
-                decorator_object.local_path.starts_with(
-                    FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
+            if (
+                decorator_object.kind is ObjectKind.ROUTINE_CALL
+                and decorator_object.callable_.module_path
+                == FUNCTOOLS_MODULE_PATH
+                and (
+                    decorator_object.callable_.local_path.starts_with(
+                        FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
+                    )
                 )
             ):
                 return

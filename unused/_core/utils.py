@@ -8,6 +8,7 @@ _T2 = TypeVar('_T2')
 _T3 = TypeVar('_T3')
 _T4 = TypeVar('_T4')
 _T5 = TypeVar('_T5')
+_T6 = TypeVar('_T6')
 
 
 @overload
@@ -40,6 +41,16 @@ def ensure_type(
     cls_or_union: tuple[type[_T1], type[_T2], type[_T3], type[_T4], type[_T5]],
     /,
 ) -> _T1 | _T2 | _T3 | _T4 | _T5: ...
+
+
+@overload
+def ensure_type(
+    value: Any,
+    cls_or_union: tuple[
+        type[_T1], type[_T2], type[_T3], type[_T4], type[_T5], type[_T6]
+    ],
+    /,
+) -> _T1 | _T2 | _T3 | _T4 | _T5 | _T6: ...
 
 
 def ensure_type(
