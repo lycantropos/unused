@@ -10,7 +10,7 @@ import pkgutil
 import sys
 import tempfile
 import types
-from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from importlib.machinery import (
     EXTENSION_SUFFIXES,
     ExtensionFileLoader,
@@ -34,8 +34,10 @@ from .object_ import (
     CLASS_SCOPE_KINDS,
     Class,
     Module,
+    MutableObject,
     Object,
     PlainObject,
+    Routine,
     UnknownObject,
 )
 from .object_path import (
@@ -50,6 +52,7 @@ from .resolution import (
     ResolvedAssignmentTarget,
     ResolvedAssignmentTargetSplitPath,
     combine_resolved_assignment_target_with_value,
+    flatten_resolved_assignment_target,
     resolve_assignment_target,
 )
 from .scope import Scope
@@ -372,10 +375,7 @@ class ScopeParser(ast.NodeVisitor):
             module_scope.mark_module_as_dynamic()
             return
         if (
-            (
-                callable_object.kind
-                in (ObjectKind.INSTANCE_ROUTINE, ObjectKind.ROUTINE)
-            )
+            (callable_object.kind in (ObjectKind.METHOD, ObjectKind.ROUTINE))
             and _does_function_modify_caller_global_state(
                 _to_plain_routine_object(callable_object),
                 caller_module_scope=self._get_module_scope(),
@@ -444,7 +444,7 @@ class ScopeParser(ast.NodeVisitor):
         )
         for body_node in node.body:
             cls_parser.visit(body_node)
-        metacls_object: Object | None = None
+        metacls_object: Object | Missing = MISSING
         for keyword in node.keywords:
             if keyword.arg == 'metaclass':
                 metacls_object = self._construct_object_from_expression_node(
@@ -527,21 +527,16 @@ class ScopeParser(ast.NodeVisitor):
             decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
             )
-            assert isinstance(decorator_object, PlainObject), decorator_object
-            if decorator_object is None:
-                continue
+            assert decorator_object is not None
             if (
                 (
                     decorator_object.kind
-                    in (ObjectKind.INSTANCE_ROUTINE, ObjectKind.ROUTINE)
+                    in (ObjectKind.METHOD, ObjectKind.ROUTINE)
                 )
                 and _does_function_modify_caller_global_state(
                     (
-                        decorator_object.instance_routine_to_routine()
-                        if (
-                            decorator_object.kind
-                            is ObjectKind.INSTANCE_ROUTINE
-                        )
+                        decorator_object.routine
+                        if decorator_object.kind is ObjectKind.METHOD
                         else decorator_object
                     ),
                     caller_module_scope=self._get_module_scope(),
@@ -573,7 +568,7 @@ class ScopeParser(ast.NodeVisitor):
     def visit_For(self, node: ast.For) -> None:
         resolved_target = self._resolve_assignment_target(node.target)
         assert resolved_target is not None
-        for target_object_split_path in _flatten_resolved_assignment_target(
+        for target_object_split_path in flatten_resolved_assignment_target(
             resolved_target
         ):
             self._set_target_object_split_path(
@@ -596,7 +591,7 @@ class ScopeParser(ast.NodeVisitor):
                     resolved_target, element
                 ):
                     if object_split_path is not None and value is not MISSING:
-                        self._resolve_absolute_local_path(
+                        self._resolve_absolute_local_path_of_mutable_object(
                             object_split_path.module,
                             object_split_path.absolute,
                         ).set_nested_value(object_split_path.relative, value)
@@ -995,7 +990,7 @@ class ScopeParser(ast.NodeVisitor):
             ctx := getattr(target_node, 'ctx', None)
         ) is None or isinstance(ctx, ast.Store), ast.unparse(target_node)
         resolved_target = self._resolve_assignment_target(target_node)
-        for target_object_split_path in _flatten_resolved_assignment_target(
+        for target_object_split_path in flatten_resolved_assignment_target(
             resolved_target
         ):
             self._set_target_object_split_path(
@@ -1033,22 +1028,22 @@ class ScopeParser(ast.NodeVisitor):
                         == 0
                     )
                     continue
-                self._resolve_absolute_local_path(
+                self._resolve_absolute_local_path_of_mutable_object(
                     maybe_target_object_split_path.module,
                     maybe_target_object_split_path.absolute,
                 ).set_nested_value(
                     maybe_target_object_split_path.relative, sub_value
                 )
         else:
-            for (
-                target_object_split_path
-            ) in _flatten_resolved_assignment_target(resolved_target):
+            for target_object_split_path in flatten_resolved_assignment_target(
+                resolved_target
+            ):
                 if len(target_object_split_path.relative.components) == 0:
                     assert (
                         len(target_object_split_path.absolute.components) == 0
                     )
                     continue
-                self._resolve_absolute_local_path(
+                self._resolve_absolute_local_path_of_mutable_object(
                     target_object_split_path.module,
                     target_object_split_path.absolute,
                 ).safe_delete_nested_value(target_object_split_path.relative)
@@ -1063,10 +1058,14 @@ class ScopeParser(ast.NodeVisitor):
             == len(target_object_split_path.relative.components)
             == 0
         ):
+            assert isinstance(value_object, MutableObject), value_object
             MODULES[target_object_split_path.module] = value_object
             return
-        target_object_or_scope = self._resolve_absolute_local_path(
-            target_object_split_path.module, target_object_split_path.absolute
+        target_object_or_scope = (
+            self._resolve_absolute_local_path_of_mutable_object(
+                target_object_split_path.module,
+                target_object_split_path.absolute,
+            )
         )
         (
             target_object_or_scope.set_nested_object
@@ -1074,13 +1073,13 @@ class ScopeParser(ast.NodeVisitor):
             else target_object_or_scope.set_nested_attribute
         )(target_object_split_path.relative, value_object)
 
-    def _resolve_absolute_local_path(
+    def _resolve_absolute_local_path_of_mutable_object(
         self, module_path: ModulePath, local_path: LocalObjectPath, /
-    ) -> Scope | Object:
+    ) -> Scope | MutableObject:
         if module_path != self._scope.module_path:
             return self._resolve_absolute_module_path(
                 module_path
-            ).get_nested_attribute(local_path)
+            ).get_mutable_nested_attribute(local_path)
         if local_path.starts_with(self._scope.local_path):
             relative_local_path = LocalObjectPath(
                 *local_path.components[
@@ -1090,13 +1089,13 @@ class ScopeParser(ast.NodeVisitor):
             return (
                 self._scope
                 if len(relative_local_path.components) == 0
-                else self._scope.get_nested_object(relative_local_path)
+                else self._scope.get_mutable_nested_object(relative_local_path)
             )
         module_scope = self._get_module_scope()
         return (
             module_scope
             if len(local_path.components) == 0
-            else module_scope.get_nested_object(local_path)
+            else module_scope.get_mutable_nested_object(local_path)
         )
 
     def _resolve_assignment_target(
@@ -1112,7 +1111,7 @@ class ScopeParser(ast.NodeVisitor):
 
     def _resolve_absolute_module_path(
         self, module_path: ModulePath, /
-    ) -> Object:
+    ) -> MutableObject:
         return resolve_module_path(
             module_path,
             function_definition_nodes=self._function_definition_nodes,
@@ -1126,15 +1125,8 @@ class ScopeParser(ast.NodeVisitor):
         /,
     ) -> Sequence[Any | Missing | Starred]:
         result: list[Any] = []
-        if callable_object.kind is ObjectKind.INSTANCE_ROUTINE:
-            instance_local_path = callable_object.local_path.parent
-            result.append(
-                self._resolve_absolute_local_path(
-                    callable_object.module_path, instance_local_path.parent
-                ).get_value_or_else(
-                    instance_local_path.components[-1], default=MISSING
-                )
-            )
+        if callable_object.kind is ObjectKind.METHOD:
+            result.append(callable_object.instance)
         for positional_argument_node in positional_argument_nodes:
             if isinstance(positional_argument_node, ast.Starred):
                 try:
@@ -1161,6 +1153,7 @@ class ScopeParser(ast.NodeVisitor):
         self, node: ast.AsyncFunctionDef | ast.FunctionDef, /
     ) -> None:
         function_name = node.name
+        function_object: Object
         for decorator_node in node.decorator_list:
             decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
@@ -1196,12 +1189,14 @@ class ScopeParser(ast.NodeVisitor):
                 decorator_object.local_path
                 == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
             ):
-                function_object = PlainObject(
-                    ObjectKind.ROUTINE,
+                function_object = Routine(
                     self._scope.module_path,
                     self._scope.local_path.join(function_name),
-                    TYPES_MODULE.get_nested_attribute(
-                        TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                    ensure_type(
+                        TYPES_MODULE.get_nested_attribute(
+                            TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                     UnknownObject(
                         decorator_object.module_path,
@@ -1224,12 +1219,14 @@ class ScopeParser(ast.NodeVisitor):
                 )
                 break
         else:
-            function_object = PlainObject(
-                ObjectKind.ROUTINE,
+            function_object = Routine(
                 self._scope.module_path,
                 self._scope.local_path.join(function_name),
-                TYPES_MODULE.get_nested_attribute(
-                    TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                ensure_type(
+                    TYPES_MODULE.get_nested_attribute(
+                        TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             )
         if (
@@ -1303,10 +1300,10 @@ class ScopeParser(ast.NodeVisitor):
         ] = node
 
 
-def _to_plain_routine_object(callable_object: Object) -> Object:
-    if callable_object.kind is ObjectKind.INSTANCE_ROUTINE:
-        assert isinstance(callable_object, PlainObject), callable_object
-        return callable_object.instance_routine_to_routine()
+def _to_plain_routine_object(callable_object: Object) -> Routine:
+    if callable_object.kind is ObjectKind.METHOD:
+        return callable_object.routine
+    assert isinstance(callable_object, Routine)
     return callable_object
 
 
@@ -1404,7 +1401,7 @@ def resolve_module_path(
         ast.AsyncFunctionDef | ast.FunctionDef,
     ],
     module_file_paths: Mapping[ModulePath, Path | None],
-) -> Object:
+) -> MutableObject:
     root_component, *rest_components = module_path.components
     root_module_path = ModulePath(root_component)
     result = _load_module_by_path(
@@ -1422,7 +1419,7 @@ def resolve_module_path(
             )
         except ModuleNotFoundError as error:
             try:
-                result = result.get_attribute(component)
+                result = result.get_mutable_attribute(component)
             except KeyError:
                 raise error from None
     return result
@@ -1438,26 +1435,6 @@ def _checked_module_file_path_from_module_info(
     if not isinstance(module_loader, ExtensionFileLoader | SourceFileLoader):
         return None
     return Path(module_loader.path).resolve(strict=True)
-
-
-def _flatten_resolved_assignment_target(
-    target: ResolvedAssignmentTarget, /
-) -> Iterable[ResolvedAssignmentTargetSplitPath]:
-    if target is None:
-        return
-    queue: list[ResolvedAssignmentTarget] = (
-        [target]
-        if isinstance(target, ResolvedAssignmentTargetSplitPath)
-        else list(target)
-    )
-    while queue:
-        candidate = queue.pop()
-        if candidate is None:
-            continue
-        if not isinstance(candidate, ResolvedAssignmentTargetSplitPath):
-            queue.extend(candidate)
-            continue
-        yield candidate
 
 
 BUILTINS_PROPERTY_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
@@ -1486,7 +1463,7 @@ def _load_module_by_path(
         ast.AsyncFunctionDef | ast.FunctionDef,
     ],
     module_file_paths: Mapping[ModulePath, Path | None],
-) -> Object:
+) -> MutableObject:
     try:
         result = MODULES[module_path]
     except KeyError:

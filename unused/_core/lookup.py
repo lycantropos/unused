@@ -5,6 +5,7 @@ import functools
 
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
+from .missing import MISSING
 from .modules import MODULES
 from .object_ import Class, Object, PlainObject
 from .object_path import (
@@ -79,7 +80,7 @@ def _(
                 callable_object.local_path,
             ),
             callable_object,
-            metaclass=None,
+            metaclass=MISSING,
         )
     if callable_object.kind is ObjectKind.ROUTINE:
         return PlainObject(

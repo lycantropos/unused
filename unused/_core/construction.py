@@ -8,6 +8,7 @@ from .context import Context
 from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
+from .missing import MISSING
 from .modules import BUILTINS_MODULE, MODULES
 from .object_ import Class, Object, PlainObject, UnknownObject
 from .object_path import (
@@ -86,7 +87,7 @@ def _(
                 BUILTINS_MODULE.get_nested_attribute(
                     BUILTINS_TYPE_LOCAL_OBJECT_PATH
                 ),
-                metaclass=None,
+                metaclass=MISSING,
             )
             if (
                 len(node.args) == 1
@@ -112,7 +113,7 @@ def _(
                         builtins.object.__qualname__
                     )
                 ),
-                metaclass=None,
+                metaclass=MISSING,
             )
         )
     if callable_object.kind is ObjectKind.CLASS:
@@ -171,7 +172,7 @@ def _(
             BUILTINS_MODULE.get_nested_attribute(
                 LocalObjectPath.from_object_name(object.__qualname__)
             ),
-            metaclass=None,
+            metaclass=MISSING,
         )
         for field_name in named_tuple_field_names:
             named_tuple_object.set_attribute(

@@ -241,3 +241,23 @@ def _(
     return ResolvedAssignmentTargetSplitPath(
         scope.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
     )
+
+
+def flatten_resolved_assignment_target(
+    target: ResolvedAssignmentTarget, /
+) -> Iterable[ResolvedAssignmentTargetSplitPath]:
+    if target is None:
+        return
+    queue: list[ResolvedAssignmentTarget] = (
+        [target]
+        if isinstance(target, ResolvedAssignmentTargetSplitPath)
+        else list(target)
+    )
+    while queue:
+        candidate = queue.pop()
+        if candidate is None:
+            continue
+        if not isinstance(candidate, ResolvedAssignmentTargetSplitPath):
+            queue.extend(candidate)
+            continue
+        yield candidate

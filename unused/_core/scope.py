@@ -7,8 +7,16 @@ from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
 from .mapping_chain import MappingChain
 from .missing import MISSING, Missing
-from .object_ import Object, PlainObject, UnknownObject, object_get_attribute
+from .object_ import (
+    MUTABLE_OBJECT_CLASSES,
+    MutableObject,
+    Object,
+    UnknownObject,
+    object_get_attribute,
+    object_get_mutable_attribute,
+)
 from .object_path import LocalObjectPath, ModulePath
+from .utils import ensure_type
 
 _T = TypeVar('_T')
 
@@ -56,6 +64,16 @@ class Scope:
         assert isinstance(name, str), name
         del self._objects[name]
 
+    def get_mutable_nested_object(
+        self, local_path: LocalObjectPath, /
+    ) -> MutableObject:
+        return ensure_type(
+            self.get_nested_object(local_path), MUTABLE_OBJECT_CLASSES
+        )
+
+    def get_mutable_object(self, name: str, /) -> MutableObject:
+        return ensure_type(self.get_object(name), MUTABLE_OBJECT_CLASSES)
+
     def get_nested_object(self, local_path: LocalObjectPath, /) -> Object:
         assert isinstance(local_path, LocalObjectPath), local_path
         assert len(local_path.components) > 0, local_path
@@ -76,25 +94,13 @@ class Scope:
 
     def get_object(self, name: str, /) -> Object:
         try:
-            candidate = self._objects[name]
+            return self._objects[name]
         except KeyError:
             for included_object in self._included_objects:
                 try:
-                    candidate = included_object.get_attribute(name)
+                    return included_object.get_attribute(name)
                 except KeyError:
                     continue
-                else:
-                    if candidate.kind is ObjectKind.ROUTINE and (
-                        self._kind is ScopeKind.CLASS
-                        and included_object.kind is ObjectKind.METACLASS
-                    ):
-                        candidate = PlainObject(
-                            ObjectKind.INSTANCE_ROUTINE,
-                            self._module_path,
-                            self._local_path.join(name),
-                            candidate,
-                        )
-                    return candidate
             if self.kind in (
                 ScopeKind.BUILTIN_MODULE,
                 ScopeKind.DYNAMIC_MODULE,
@@ -107,25 +113,6 @@ class Scope:
                 )
                 return result
             raise
-        else:
-            if (
-                self._kind is ScopeKind.CLASS
-                and candidate.kind is ObjectKind.ROUTINE
-                and (
-                    name
-                    in (
-                        object.__init_subclass__.__name__,
-                        object.__new__.__name__,
-                    )
-                )
-            ):
-                candidate = PlainObject(
-                    ObjectKind.INSTANCE_ROUTINE,
-                    self._module_path,
-                    self._local_path.join(name),
-                    candidate,
-                )
-            return candidate
 
     def mark_module_as_dynamic(self, /) -> None:
         assert self._kind is ScopeKind.STATIC_MODULE
@@ -140,9 +127,9 @@ class Scope:
         assert len(local_path.components) > 0, local_path
         if len(local_path.components) == 1:
             return self.safe_delete_value(local_path.components[-1])
-        return self.get_nested_object(local_path.parent).safe_delete_value(
-            local_path.components[-1]
-        )
+        return self.get_mutable_nested_object(
+            local_path.parent
+        ).safe_delete_value(local_path.components[-1])
 
     def set_object(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -157,9 +144,9 @@ class Scope:
         *first_components, last_component = local_path.components
         if len(first_components) > 0:
             parent_object = functools.reduce(
-                object_get_attribute,
+                object_get_mutable_attribute,
                 first_components[1:],
-                self.get_object(first_components[0]),
+                self.get_mutable_object(first_components[0]),
             )
             parent_object.set_attribute(last_component, object_)
         else:

@@ -17,11 +17,14 @@ from .object_ import (
     CLASS_OBJECT_KINDS,
     Class,
     ClassObjectKind,
+    Method,
     Module,
+    MutableObject,
     Object,
     PLAIN_OBJECT_KINDS,
     PlainObject,
     PlainObjectKind,
+    Routine,
     UnknownObject,
 )
 from .object_path import (
@@ -34,6 +37,7 @@ from .object_path import (
     LocalObjectPath,
     ModulePath,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
+    TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH,
     TYPES_MODULE_PATH,
 )
 from .safety import is_safe
@@ -42,7 +46,7 @@ from .utils import ensure_type
 
 ObjectPath: TypeAlias = tuple[ModulePath, LocalObjectPath]
 
-MODULES: Final[dict[ModulePath, Object]] = {}
+MODULES: Final[dict[ModulePath, MutableObject]] = {}
 
 
 def parse_modules(*modules: types.ModuleType) -> None:
@@ -341,6 +345,23 @@ def _collect_dependencies(
                     field_dependency_node.module_path,
                     field_dependency_node.local_path,
                 ] = (BUILTINS_MODULE_PATH, BUILTINS_TUPLE_LOCAL_OBJECT_PATH)
+            elif inspect.ismethod(field_value):
+                dependency_graph.setdefault(field_dependency_node, set()).add(
+                    DependencyNode(
+                        _classify_value(types.MethodType),
+                        TYPES_MODULE_PATH,
+                        TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH,
+                        dependant_local_path=(
+                            TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH
+                        ),
+                        dependant_module_path=TYPES_MODULE_PATH,
+                        value=MISSING,
+                    )
+                )
+                instance_class_paths[
+                    field_dependency_node.module_path,
+                    field_dependency_node.local_path,
+                ] = (TYPES_MODULE_PATH, TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH)
             elif inspect.isroutine(field_value):
                 dependency_graph.setdefault(field_dependency_node, set()).add(
                     DependencyNode(
@@ -531,6 +552,19 @@ def _dependency_node_to_object(
     object_kind = dependency_node.object_kind
     if object_kind is ObjectKind.STATIC_MODULE:
         return MODULES[dependency_node.module_path]
+    if object_kind is ObjectKind.ROUTINE:
+        return Routine(
+            dependency_node.module_path,
+            dependency_node.local_path,
+            ensure_type(
+                _path_to_object(
+                    instance_class_paths[
+                        dependency_node.module_path, dependency_node.local_path
+                    ]
+                ),
+                Class,
+            ),
+        )
     if object_kind is ObjectKind.UNKNOWN:
         return UnknownObject(
             dependency_node.module_path, dependency_node.local_path
@@ -560,7 +594,7 @@ def _dependency_node_to_object(
                     )
                 )
                 is not None
-                else None
+                else MISSING
             ),
         )
     assert _is_plain_object_kind(object_kind), object_kind
@@ -597,6 +631,10 @@ BUILTINS_MODULE: Final[Module] = ensure_type(
     MODULES[BUILTINS_MODULE_PATH], Module
 )
 TYPES_MODULE: Final[Object] = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
+Method.BASE_CLS = ensure_type(
+    TYPES_MODULE.get_nested_attribute(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH),
+    Class,
+)
 
 
 def _setup_builtin_classes() -> None:

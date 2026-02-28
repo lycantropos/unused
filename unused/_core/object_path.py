@@ -97,7 +97,10 @@ class LocalObjectPath:
 
     @property
     def parent(self, /) -> Self:
-        assert len(self._components) > 0, self
+        try:
+            assert len(self._components) > 0, self
+        except AssertionError:
+            raise
         return type(self)(*self._components[:-1])
 
     def join(self, /, *components: str) -> Self:
@@ -244,4 +247,11 @@ TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 assert (
     _search_local_path(TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH, types)
     is types.FunctionType
+)
+TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'MethodType'
+)
+assert (
+    _search_local_path(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH, types)
+    is types.MethodType
 )
