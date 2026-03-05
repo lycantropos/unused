@@ -97,10 +97,7 @@ class LocalObjectPath:
 
     @property
     def parent(self, /) -> Self:
-        try:
-            assert len(self._components) > 0, self
-        except AssertionError:
-            raise
+        assert len(self._components) > 0, self
         return type(self)(*self._components[:-1])
 
     def join(self, /, *components: str) -> Self:
@@ -211,6 +208,13 @@ assert (
     _search_local_path(BUILTINS_LIST_LOCAL_OBJECT_PATH, builtins)
     is builtins.list
 )
+BUILTINS_OBJECT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'object'
+)
+assert (
+    _search_local_path(BUILTINS_OBJECT_LOCAL_OBJECT_PATH, builtins)
+    is builtins.object
+)
 BUILTINS_SET_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath('set')
 assert (
     _search_local_path(BUILTINS_SET_LOCAL_OBJECT_PATH, builtins)
@@ -254,4 +258,12 @@ TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
 assert (
     _search_local_path(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH, types)
     is types.MethodType
+)
+FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: Final = '__defaults__'
+assert types.FunctionType.__defaults__ is getattr(
+    types.FunctionType, FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
+)
+FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME: Final = '__kwdefaults__'
+assert types.FunctionType.__kwdefaults__ is getattr(
+    types.FunctionType, FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
 )
