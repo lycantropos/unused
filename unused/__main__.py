@@ -4,14 +4,16 @@ import subprocess
 import sys
 import traceback
 from abc import ABC, abstractmethod
-from functools import reduce
-from importlib.machinery import EXTENSION_SUFFIXES, SOURCE_SUFFIXES
 from itertools import chain
 from pathlib import Path
-from typing import ClassVar, Final
+from typing import ClassVar
 
 from typing_extensions import Self, override
 
+from unused._core.file_system import (
+    MODULE_FILE_PATH_SUFFIXES,
+    relative_module_file_path_to_module_path_components,
+)
 from unused._core.valuespace import BaseValuespace
 
 if sys.version_info < (3, 11):
@@ -173,47 +175,32 @@ def main() -> None:
             )
         paths = [path.resolve(strict=True) for path in unchecked_paths]
 
-    import ast
-
-    from unused._core.object_path import LocalObjectPath, ModulePath
-    from unused._core.scope_parser import (
-        load_module_file_paths,
-        resolve_module_path,
-    )
+    from unused._core.file_system import load_module_file_paths
+    from unused._core.object_path import ModulePath
+    from unused._core.scope_parser import resolve_module_path
 
     module_file_paths = load_module_file_paths(root_path)
-    function_definition_nodes: dict[
-        tuple[ModulePath, LocalObjectPath],
-        ast.AsyncFunctionDef | ast.FunctionDef,
-    ] = {}
 
     stderr, stdout = sys.stderr, sys.stdout
     for module_file_path in chain.from_iterable(
         (
-            chain(*[path.rglob('*' + suffix) for suffix in _MODULE_SUFFIXES])
+            chain(*[
+                path.rglob('*' + suffix)
+                for suffix in MODULE_FILE_PATH_SUFFIXES
+            ])
             if path.is_dir()
             else [path]
         )
         for path in paths
     ):
         try:
-            module_path = ModulePath(
-                *module_file_path.relative_to(root_path).parent.parts,
-                *(
-                    (module_name,)
-                    if (
-                        (
-                            module_name := reduce(
-                                str.removesuffix,
-                                _MODULE_SUFFIXES,
-                                module_file_path.name,
-                            )
-                        )
-                        != '__init__'
-                    )
-                    else ()
-                ),
+            relative_module_file_path = module_file_path.relative_to(root_path)
+            module_path_components = (
+                relative_module_file_path_to_module_path_components(
+                    relative_module_file_path
+                )
             )
+            module_path = ModulePath(*module_path_components)
         except ValueError as error:
             stderr.write(
                 'Failed parsing module path of '
@@ -229,10 +216,10 @@ def main() -> None:
             continue
         try:
             resolve_module_path(
-                module_path,
-                function_definition_nodes=function_definition_nodes,
-                module_file_paths=module_file_paths,
+                module_path, module_file_paths=module_file_paths
             )
+        except ModuleNotFoundError:
+            continue
         except Exception as error:
             stderr.write(f'Failed loading {module_path.to_module_name()!r}:\n')
             stderr.writelines(
@@ -247,21 +234,15 @@ def main() -> None:
         stdout.flush()
 
 
-_MODULE_SUFFIXES: Final[tuple[str, ...]] = (
-    *SOURCE_SUFFIXES,
-    *EXTENSION_SUFFIXES,
-)
-
-
 def _to_module_file_path_validation_error(value: Path, /) -> Exception | None:
     try:
         value.resolve(strict=True)
     except OSError as error:
         return error
-    if not (value.is_dir() or value.name.endswith(_MODULE_SUFFIXES)):
+    if not (value.is_dir() or value.name.endswith(MODULE_FILE_PATH_SUFFIXES)):
         return ValueError(
             'a directory or a single module '
-            f'(with suffix {", ".join(map(repr, _MODULE_SUFFIXES))}) '
+            f'(with suffix {", ".join(map(repr, MODULE_FILE_PATH_SUFFIXES))}) '
             'is expected'
         )
     return None

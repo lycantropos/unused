@@ -6,7 +6,6 @@ import uuid
 
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
-from .missing import MISSING
 from .modules import MODULES
 from .object_ import Call, Class, Object, PlainObject
 from .object_path import (
@@ -74,14 +73,10 @@ def _(
             callable_object,
         )
     if callable_object.kind is ObjectKind.METACLASS:
+        local_path = scope.local_path.join('__' + uuid.uuid4().hex)
         return Class(
-            Scope(
-                ScopeKind.CLASS,
-                callable_object.module_path,
-                callable_object.local_path,
-            ),
-            callable_object,
-            metaclass=MISSING,
+            Scope(ScopeKind.CLASS, scope.module_path, local_path),
+            metaclass=callable_object,
         )
     if callable_object.kind is ObjectKind.ROUTINE:
         from .construction import construct_object_from_expression_node

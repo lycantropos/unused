@@ -6,17 +6,9 @@ import contextlib
 import enum
 import functools
 import operator
-import pkgutil
-import sys
-import tempfile
-import types
+import signal
 from collections.abc import Mapping, MutableMapping, Sequence
-from importlib.machinery import (
-    EXTENSION_SUFFIXES,
-    ExtensionFileLoader,
-    SOURCE_SUFFIXES,
-    SourceFileLoader,
-)
+from importlib.machinery import EXTENSION_SUFFIXES
 from itertools import chain, repeat, takewhile
 from pathlib import Path
 from typing import Any, Final
@@ -29,7 +21,7 @@ from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
-from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE, parse_modules
+from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
 from .object_ import (
     CLASS_SCOPE_KINDS,
     Class,
@@ -42,8 +34,12 @@ from .object_ import (
 )
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
+    BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
+    BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     DICT_FIELD_NAME,
+    FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
+    FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
@@ -56,19 +52,14 @@ from .resolution import (
     resolve_assignment_target,
 )
 from .scope import Scope
-from .utils import ensure_type
+from .utils import AnyFunctionDefinitionAstNode, ensure_type
 
-FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: Final = '__defaults__'
-FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME: Final = '__kwdefaults__'
 MODULE_FIELD_NAME: Final = '__module__'
 NAME_FIELD_NAME: Final = '__name__'
 QUALNAME_FIELD_NAME: Final = '__qualname__'
 
 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
     'ModuleType'
-)
-EMPTY_MODULE_FILE_PATH: Final[Path] = Path(
-    tempfile.NamedTemporaryFile(delete=False).name  # noqa: SIM115
 )
 BUILTINS_STR_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
     LocalObjectPath.from_object_name(builtins.str.__qualname__)
@@ -78,13 +69,9 @@ BUILTINS_STR_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 def _does_function_modify_caller_global_state(
     function_object: Object,
     /,
-    *,
+    *function_call_scopes: Scope,
     cache: dict[tuple[ModulePath, LocalObjectPath], bool] = {},  # noqa: B006
     caller_module_scope: Scope,
-    function_definition_nodes: MutableMapping[
-        tuple[ModulePath, LocalObjectPath],
-        ast.AsyncFunctionDef | ast.FunctionDef,
-    ],
     keyword_arguments: Mapping[str, Any],
     module_file_paths: Mapping[ModulePath, Path | None],
     positional_arguments: Sequence[Any | Missing | Starred],
@@ -93,14 +80,12 @@ def _does_function_modify_caller_global_state(
     try:
         return cache[cache_key]
     except KeyError:
-        try:
-            function_definition_node = function_definition_nodes[
-                function_object.module_path, function_object.local_path
-            ]
-        except KeyError:
-            assert module_file_paths[function_object.module_path] is None, (
-                function_object
-            )
+        function_definition_node = (
+            function_object.ast_node
+            if isinstance(function_object, Routine)
+            else None
+        )
+        if function_definition_node is None:
             cache[cache_key] = result = (
                 function_object.module_path == BUILTINS_MODULE_PATH
                 and (
@@ -223,7 +208,7 @@ def _does_function_modify_caller_global_state(
                         variadic_positional_parameter_name
                     ),
                     BUILTINS_MODULE.get_nested_attribute(
-                        LocalObjectPath.from_object_name(tuple.__qualname__)
+                        BUILTINS_TUPLE_LOCAL_OBJECT_PATH
                     ),
                 ),
             )
@@ -246,7 +231,7 @@ def _does_function_modify_caller_global_state(
                         variadic_keyword_parameter_name
                     ),
                     BUILTINS_MODULE.get_nested_attribute(
-                        LocalObjectPath.from_object_name(dict.__qualname__)
+                        BUILTINS_DICT_LOCAL_OBJECT_PATH
                     ),
                 ),
             )
@@ -255,12 +240,9 @@ def _does_function_modify_caller_global_state(
             )
         function_body_parser = ScopeParser(
             function_scope,
-            ensure_type(
-                MODULES[function_object.module_path], Module
-            ).to_scope(),
             BUILTINS_MODULE.to_scope(),
+            *function_call_scopes,
             context=FunctionCallContext(caller_module_scope.module_path),
-            function_definition_nodes=function_definition_nodes,
             module_file_paths=module_file_paths,
         )
         cache[cache_key] = result = False
@@ -285,26 +267,15 @@ class ScopeParser(ast.NodeVisitor):
         /,
         *parent_scopes: Scope,
         context: Context,
-        function_definition_nodes: MutableMapping[
-            tuple[ModulePath, LocalObjectPath],
-            ast.AsyncFunctionDef | ast.FunctionDef,
-        ],
         module_file_paths: Mapping[ModulePath, Path | None],
     ) -> None:
         super().__init__()
         (
             self._context,
-            self._function_definition_nodes,
             self._module_file_paths,
             self._scope,
             self._parent_scopes,
-        ) = (
-            context,
-            function_definition_nodes,
-            module_file_paths,
-            scope,
-            parent_scopes,
-        )
+        ) = context, module_file_paths, scope, parent_scopes
         self._name_scopes: MutableMapping[str, Scope] = {}
 
     @override
@@ -394,25 +365,45 @@ class ScopeParser(ast.NodeVisitor):
         ).kind is ScopeKind.STATIC_MODULE:
             module_scope.mark_module_as_dynamic()
             return
-        if (
-            (callable_object.kind in (ObjectKind.METHOD, ObjectKind.ROUTINE))
-            and _does_function_modify_caller_global_state(
-                _to_plain_routine_object(callable_object),
-                caller_module_scope=self._get_module_scope(),
-                function_definition_nodes=self._function_definition_nodes,
-                keyword_arguments=self._evaluate_keyword_arguments(
-                    node.keywords
-                ),
-                module_file_paths=self._module_file_paths,
-                positional_arguments=self._to_complete_positional_arguments(
-                    node.args, callable_object
-                ),
-            )
-        ) and (
-            module_scope := self._get_module_scope()
-        ).kind is ScopeKind.STATIC_MODULE:
-            module_scope.mark_module_as_dynamic()
-            return
+        if callable_object.kind in (ObjectKind.METHOD, ObjectKind.ROUTINE):
+            function_object = _to_plain_routine_object(callable_object)
+            if (
+                _does_function_modify_caller_global_state(
+                    function_object,
+                    *(
+                        self._get_inherited_scopes()
+                        if (
+                            function_object.module_path
+                            == self._scope.module_path
+                            and (
+                                function_object.local_path.parent
+                                == self._scope.local_path
+                            )
+                        )
+                        else (
+                            ensure_type(
+                                self._resolve_absolute_module_path(
+                                    function_object.module_path
+                                ),
+                                Module,
+                            ).to_scope(),
+                            BUILTINS_MODULE.to_scope(),
+                        )
+                    ),
+                    caller_module_scope=self._get_module_scope(),
+                    keyword_arguments=self._evaluate_keyword_arguments(
+                        node.keywords
+                    ),
+                    module_file_paths=self._module_file_paths,
+                    positional_arguments=self._to_complete_positional_arguments(
+                        node.args, callable_object
+                    ),
+                )
+                and (module_scope := self._get_module_scope()).kind
+                is ScopeKind.STATIC_MODULE
+            ):
+                module_scope.mark_module_as_dynamic()
+                return
 
     @override
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -459,7 +450,6 @@ class ScopeParser(ast.NodeVisitor):
             cls_scope,
             *self._get_inherited_scopes(),
             context=self._context,
-            function_definition_nodes=self._function_definition_nodes,
             module_file_paths=self._module_file_paths,
         )
         for body_node in node.body:
@@ -548,41 +538,63 @@ class ScopeParser(ast.NodeVisitor):
                 decorator_node
             )
             assert decorator_object is not None
-            if (
-                (
-                    decorator_object.kind
-                    in (ObjectKind.METHOD, ObjectKind.ROUTINE)
-                )
-                and _does_function_modify_caller_global_state(
-                    (
-                        decorator_object.routine
-                        if decorator_object.kind is ObjectKind.METHOD
-                        else decorator_object
+            if decorator_object.kind in (
+                ObjectKind.METHOD,
+                ObjectKind.ROUTINE,
+            ):
+                function_object = _to_plain_routine_object(decorator_object)
+                if _does_function_modify_caller_global_state(
+                    function_object,
+                    *(
+                        self._get_inherited_scopes()
+                        if (
+                            function_object.module_path
+                            == self._scope.module_path
+                            and (
+                                function_object.local_path.parent
+                                == self._scope.local_path
+                            )
+                        )
+                        else (
+                            ensure_type(
+                                self._resolve_absolute_module_path(
+                                    function_object.module_path
+                                ),
+                                Module,
+                            ).to_scope(),
+                            BUILTINS_MODULE.to_scope(),
+                        )
                     ),
                     caller_module_scope=self._get_module_scope(),
+                    keyword_arguments={},
+                    module_file_paths=self._module_file_paths,
                     positional_arguments=[
                         *self._to_complete_positional_arguments(
                             [], decorator_object
                         ),
                         cls_scope.as_object(),
                     ],
-                    keyword_arguments={},
-                    function_definition_nodes=self._function_definition_nodes,
-                    module_file_paths=self._module_file_paths,
-                )
-                and (
+                ) and (
                     (module_scope := self._get_module_scope()).kind
                     is ScopeKind.STATIC_MODULE
-                )
-            ):
-                module_scope.mark_module_as_dynamic()
-                continue
+                ):
+                    module_scope.mark_module_as_dynamic()
+                    continue
         self._scope.set_object(cls_name, cls_object)
         self._scope.set_value(cls_name, cls_scope.as_object())
 
     @override
     def visit_DictComp(self, node: ast.DictComp) -> None:
         return
+
+    @override
+    def visit_Expr(self, node: ast.Expr) -> None:
+        value_node = node.value
+        if isinstance(value_node, ast.Name):
+            assert isinstance(value_node.ctx, ast.Load), ast.unparse(node)
+            self._lookup_object_by_expression_node(node.value)
+        else:
+            self.generic_visit(node)
 
     @override
     def visit_For(self, node: ast.For) -> None:
@@ -1135,9 +1147,7 @@ class ScopeParser(ast.NodeVisitor):
         self, module_path: ModulePath, /
     ) -> MutableObject:
         return resolve_module_path(
-            module_path,
-            function_definition_nodes=self._function_definition_nodes,
-            module_file_paths=self._module_file_paths,
+            module_path, module_file_paths=self._module_file_paths
         )
 
     def _to_complete_positional_arguments(
@@ -1172,10 +1182,11 @@ class ScopeParser(ast.NodeVisitor):
         return result
 
     def _visit_any_function_def(
-        self, node: ast.AsyncFunctionDef | ast.FunctionDef, /
+        self, node: AnyFunctionDefinitionAstNode, /
     ) -> None:
         function_name = node.name
         function_object: Object
+        function_local_path = self._scope.local_path.join(function_name)
         for decorator_node in node.decorator_list:
             decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
@@ -1189,7 +1200,7 @@ class ScopeParser(ast.NodeVisitor):
                 function_object = PlainObject(
                     ObjectKind.PROPERTY,
                     self._scope.module_path,
-                    self._scope.local_path.join(function_name),
+                    function_local_path,
                     BUILTINS_MODULE.get_nested_attribute(
                         BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
                     ),
@@ -1207,17 +1218,13 @@ class ScopeParser(ast.NodeVisitor):
                 )
             ):
                 return
-            if (
-                decorator_object.kind is ObjectKind.ROUTINE
-                and decorator_object.module_path == FUNCTOOLS_MODULE_PATH
-                and (
-                    decorator_object.local_path
-                    == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
-                )
+            if decorator_object.module_path == FUNCTOOLS_MODULE_PATH and (
+                decorator_object.local_path
+                == FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
             ):
                 function_object = Routine(
                     self._scope.module_path,
-                    self._scope.local_path.join(function_name),
+                    function_local_path,
                     ensure_type(
                         TYPES_MODULE.get_nested_attribute(
                             TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
@@ -1228,6 +1235,7 @@ class ScopeParser(ast.NodeVisitor):
                         decorator_object.module_path,
                         decorator_object.local_path,
                     ),
+                    ast_node=node,
                 )
                 break
             if (
@@ -1245,20 +1253,33 @@ class ScopeParser(ast.NodeVisitor):
                 function_object = PlainObject(
                     ObjectKind.INSTANCE,
                     self._scope.module_path,
-                    self._scope.local_path.join(function_name),
+                    function_local_path,
                     decorator_object,
                 )
+                if decorator_object.module_path == BUILTINS_MODULE_PATH and (
+                    decorator_object.local_path
+                    == LocalObjectPath.from_object_name(
+                        builtins.classmethod.__qualname__
+                    )
+                ):
+                    wrapped_object = Routine(
+                        self._scope.module_path,
+                        function_local_path.join('__func__'),
+                        ast_node=node,
+                    )
+                    function_object.set_attribute('__func__', wrapped_object)
                 break
         else:
             function_object = Routine(
                 self._scope.module_path,
-                self._scope.local_path.join(function_name),
+                function_local_path,
                 ensure_type(
                     TYPES_MODULE.get_nested_attribute(
                         TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                     ),
                     Class,
                 ),
+                ast_node=node,
             )
         if (
             function_name == '__getattr__'
@@ -1326,127 +1347,33 @@ class ScopeParser(ast.NodeVisitor):
             FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME, keyword_only_defaults
         )
         self._scope.set_object(function_name, function_object)
-        self._function_definition_nodes[
-            self._scope.module_path, self._scope.local_path.join(function_name)
-        ] = node
 
 
-def _to_plain_routine_object(callable_object: Object) -> Routine:
+def _to_plain_routine_object(callable_object: Object, /) -> Routine:
     if callable_object.kind is ObjectKind.METHOD:
-        return callable_object.routine
+        result = callable_object.routine
+        assert isinstance(result, Routine)
+        return result
     assert isinstance(callable_object, Routine)
     return callable_object
-
-
-def load_module_file_paths(
-    *source_directories: Path,
-) -> Mapping[ModulePath, Path | None]:
-    result: dict[ModulePath, Path | None] = {
-        module_path: None
-        for module_name in sys.stdlib_module_names
-        if (
-            (module_path := ModulePath.checked_from_module_name(module_name))
-            is not None
-        )
-    }
-    for module_info in chain(
-        pkgutil.iter_modules(),
-        pkgutil.iter_modules(map(Path.as_posix, source_directories)),
-    ):
-        if (
-            module_path := ModulePath.checked_from_module_name(
-                module_info.name
-            )
-        ) is not None:
-            result[module_path] = module_file_path = (
-                _checked_module_file_path_from_module_info(module_info)
-            )
-            if module_info.ispkg:
-                assert module_file_path is not None, module_path
-                package_directory_path = module_file_path.parent
-                package_module_path = ModulePath.from_module_name(
-                    module_info.name
-                )
-                assert package_directory_path.is_dir(), module_path
-                for module_file_path_suffix in (
-                    SOURCE_SUFFIXES + EXTENSION_SUFFIXES
-                ):
-                    for submodule_file_path in package_directory_path.rglob(
-                        '*' + module_file_path_suffix
-                    ):
-                        if submodule_file_path == module_file_path:
-                            continue
-                        submodule_relative_file_path = (
-                            submodule_file_path.relative_to(
-                                package_directory_path
-                            )
-                        )
-                        for interim_module_relative_file_path in list(
-                            submodule_relative_file_path.parents
-                        )[:-1]:
-                            try:
-                                interim_module_path = package_module_path.join(
-                                    *interim_module_relative_file_path.parts
-                                )
-                            except ValueError:
-                                continue
-                            if not (
-                                package_directory_path
-                                / interim_module_relative_file_path
-                                / '__init__.py'
-                            ).is_file():
-                                result[interim_module_path] = (
-                                    EMPTY_MODULE_FILE_PATH
-                                )
-                        try:
-                            submodule_path = package_module_path.join(
-                                *submodule_relative_file_path.parent.parts,
-                                *(
-                                    ()
-                                    if (
-                                        (
-                                            submodule_file_name_without_suffix
-                                            := (
-                                                submodule_relative_file_path.name.removesuffix(
-                                                    module_file_path_suffix
-                                                )
-                                            )
-                                        )
-                                        == '__init__'
-                                    )
-                                    else (submodule_file_name_without_suffix,)
-                                ),
-                            )
-                        except ValueError:
-                            continue
-                        result[submodule_path] = submodule_file_path
-    return result
 
 
 def resolve_module_path(
     module_path: ModulePath,
     /,
     *,
-    function_definition_nodes: MutableMapping[
-        tuple[ModulePath, LocalObjectPath],
-        ast.AsyncFunctionDef | ast.FunctionDef,
-    ],
     module_file_paths: Mapping[ModulePath, Path | None],
 ) -> MutableObject:
     root_component, *rest_components = module_path.components
     root_module_path = ModulePath(root_component)
     result = _load_module_by_path(
-        root_module_path,
-        function_definition_nodes=function_definition_nodes,
-        module_file_paths=module_file_paths,
+        root_module_path, module_file_paths=module_file_paths
     )
     for component in rest_components:
         try:
             submodule_path = result.module_path.join(component)
             result = _load_module_by_path(
-                submodule_path,
-                function_definition_nodes=function_definition_nodes,
-                module_file_paths=module_file_paths,
+                submodule_path, module_file_paths=module_file_paths
             )
         except ModuleNotFoundError as error:
             try:
@@ -1454,18 +1381,6 @@ def resolve_module_path(
             except KeyError:
                 raise error from None
     return result
-
-
-def _checked_module_file_path_from_module_info(
-    value: pkgutil.ModuleInfo, /
-) -> Path | None:
-    module_spec = value.module_finder.find_spec(value.name, None)
-    if module_spec is None:
-        return None
-    module_loader = module_spec.loader
-    if not isinstance(module_loader, ExtensionFileLoader | SourceFileLoader):
-        return None
-    return Path(module_loader.path).resolve(strict=True)
 
 
 BUILTINS_PROPERTY_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
@@ -1489,41 +1404,90 @@ def _load_module_by_path(
     module_path: ModulePath,
     /,
     *,
-    function_definition_nodes: MutableMapping[
-        tuple[ModulePath, LocalObjectPath],
-        ast.AsyncFunctionDef | ast.FunctionDef,
-    ],
     module_file_paths: Mapping[ModulePath, Path | None],
 ) -> MutableObject:
     try:
-        result = MODULES[module_path]
+        return MODULES[module_path]
     except KeyError:
-        try:
-            module_file_path = module_file_paths[module_path]
-        except KeyError:
-            raise ModuleNotFoundError(module_path) from None
-        if module_file_path is None:
-            return Module(
-                Scope(ScopeKind.BUILTIN_MODULE, module_path, LocalObjectPath())
+        pass
+    try:
+        module_file_path = module_file_paths[module_path]
+    except KeyError:
+        raise ModuleNotFoundError(module_path) from None
+    if module_file_path is None:
+        MODULES[module_path] = result = Module(
+            Scope(ScopeKind.BUILTIN_MODULE, module_path, LocalObjectPath())
+        )
+    elif module_file_path.name.endswith(tuple(EXTENSION_SUFFIXES)):
+        MODULES[module_path] = result = Module(
+            Scope(
+                ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath()
             )
-        if module_file_path.name.endswith(tuple(EXTENSION_SUFFIXES)):
-            return Module(
-                Scope(
-                    ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath()
-                )
-            )
+        )
+    else:
         module_source_text = module_file_path.read_text(encoding='utf-8')
         module_node = ast.parse(module_source_text)
-        module = types.ModuleType(
-            module_path.to_module_name(), ast.get_docstring(module_node)
-        )
-        module.__file__ = str(module_file_path)
-        if module_file_path.name.startswith('__init__.'):
-            module.__package__ = module_path.to_module_name()
-            module.__path__ = [str(module_file_path.parent)]
         assert module_path not in MODULES
-        parse_modules(module)
-        result = MODULES[module_path]
+        module_scope = Scope(
+            ScopeKind.STATIC_MODULE, module_path, LocalObjectPath()
+        )
+        result = MODULES[module_path] = Module(module_scope)
+        result.set_attribute(
+            '__file__',
+            PlainObject(
+                ObjectKind.INSTANCE,
+                module_path,
+                LocalObjectPath('__file__'),
+                BUILTINS_MODULE.get_nested_attribute(
+                    BUILTINS_STR_LOCAL_OBJECT_PATH
+                ),
+            ),
+        )
+        result.set_value('__file__', str(module_file_path))
+        module_docstring = ast.get_docstring(module_node)
+        if module_docstring is not None:
+            result.set_attribute(
+                '__doc__',
+                PlainObject(
+                    ObjectKind.INSTANCE,
+                    module_path,
+                    LocalObjectPath('__doc__'),
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                ),
+            )
+        else:
+            result.set_attribute(
+                '__doc__',
+                UnknownObject(module_path, LocalObjectPath('__doc__')),
+            )
+        result.set_value('__doc__', module_docstring)
+        if module_file_path.name.startswith('__init__.'):
+            result.set_attribute(
+                '__package__',
+                PlainObject(
+                    ObjectKind.INSTANCE,
+                    module_path,
+                    LocalObjectPath('__package__'),
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                ),
+            )
+            result.set_value('__package__', module_path.to_module_name())
+            result.set_attribute(
+                '__path__',
+                PlainObject(
+                    ObjectKind.INSTANCE,
+                    module_path,
+                    LocalObjectPath('__path__'),
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_LIST_LOCAL_OBJECT_PATH
+                    ),
+                ),
+            )
+            result.set_value('__path__', [str(module_file_path.parent)])
         assert isinstance(result, Module), result
         result.set_attribute(
             DICT_FIELD_NAME,
@@ -1542,11 +1506,17 @@ def _load_module_by_path(
                 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH
             ),
         )
+        result.set_attribute(
+            NAME_FIELD_NAME,
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_STR_LOCAL_OBJECT_PATH
+            ),
+        )
+        result.set_value(NAME_FIELD_NAME, module_path.to_module_name())
         scope_parser = ScopeParser(
-            result.to_scope(),
+            module_scope,
             BUILTINS_MODULE.to_scope(),
             context=NullContext(),
-            function_definition_nodes=function_definition_nodes,
             module_file_paths=module_file_paths,
         )
         try:

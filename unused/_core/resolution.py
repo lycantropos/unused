@@ -12,8 +12,6 @@ from unused._core.context import Context, FunctionCallContext
 
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind
-from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
-from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
@@ -165,6 +163,8 @@ def _(
     context: Context,  # noqa: ARG001
     name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
+    from .lookup import lookup_object_by_name
+
     object_name = node.id
     if isinstance(node.ctx, ast.Load):
         object_ = lookup_object_by_name(object_name, scope, *parent_scopes)
@@ -201,6 +201,9 @@ def _(
     context: Context,
     name_scopes: Mapping[str, Scope],  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
+    from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
+    from .lookup import lookup_object_by_expression_node
+
     value_object = lookup_object_by_expression_node(
         node.value, scope, *parent_scopes, context=context
     )

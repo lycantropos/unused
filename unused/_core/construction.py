@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 import functools
-
+import abc
 from .context import Context
 from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
@@ -135,7 +135,10 @@ def _(
         callable_object.module_path == BUILTINS_MODULE_PATH
         and callable_object.local_path == BUILTINS_GLOBALS_LOCAL_OBJECT_PATH
     ):
-        assert callable_object.kind is ObjectKind.ROUTINE, callable_object
+        try:
+            assert callable_object.kind is ObjectKind.ROUTINE, callable_object
+        except AssertionError:
+            raise
         return MODULES[scope.module_path].get_attribute(DICT_FIELD_NAME)
     if (
         callable_object.kind is ObjectKind.ROUTINE

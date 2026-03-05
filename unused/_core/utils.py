@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, TypeVar, cast, overload
+import ast
+from typing import Any, TypeAlias, TypeVar, cast, overload
+
+AnyFunctionDefinitionAstNode: TypeAlias = (
+    ast.AsyncFunctionDef | ast.FunctionDef
+)
 
 _T = TypeVar('_T')
 _T1 = TypeVar('_T1')
@@ -9,6 +14,7 @@ _T3 = TypeVar('_T3')
 _T4 = TypeVar('_T4')
 _T5 = TypeVar('_T5')
 _T6 = TypeVar('_T6')
+_T7 = TypeVar('_T7')
 
 
 @overload
@@ -51,6 +57,22 @@ def ensure_type(
     ],
     /,
 ) -> _T1 | _T2 | _T3 | _T4 | _T5 | _T6: ...
+
+
+@overload
+def ensure_type(
+    value: Any,
+    cls_or_union: tuple[
+        type[_T1],
+        type[_T2],
+        type[_T3],
+        type[_T4],
+        type[_T5],
+        type[_T6],
+        type[_T7],
+    ],
+    /,
+) -> _T1 | _T2 | _T3 | _T4 | _T5 | _T6 | _T7: ...
 
 
 def ensure_type(

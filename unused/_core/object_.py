@@ -10,6 +10,7 @@ from typing import (
     TYPE_CHECKING,
     TypeAlias,
     TypeVar,
+    get_args,
 )
 
 from .attribute_mapping import AttributeMapping
@@ -17,7 +18,7 @@ from .enums import ObjectKind, ScopeKind
 from .mapping_chain import MappingChain
 from .missing import MISSING, Missing
 from .object_path import LocalObjectPath, ModulePath
-from .utils import ensure_type
+from .utils import AnyFunctionDefinitionAstNode, ensure_type
 
 if TYPE_CHECKING:
     from .scope import Scope
@@ -93,6 +94,7 @@ class Class:
                 except KeyError:
                     continue
             if (metaclass := self._metaclass) is not MISSING:
+                assert self.kind is ObjectKind.CLASS, self
                 try:
                     candidate = metaclass.get_attribute(name)
                 except KeyError:
@@ -162,9 +164,6 @@ class Class:
         self, local_path: LocalObjectPath, value: Any, /
     ) -> None:
         assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(
-            self.get_nested_attribute(local_path), PlainObject | UnknownObject
-        )
         assert value is not MISSING
         assert len(local_path.components) > 0
         object_: MutableObject = self
@@ -222,7 +221,11 @@ class Class:
         self, scope: Scope, /, *bases: Object, metaclass: Object | Missing
     ) -> None:
         assert scope.kind in CLASS_SCOPE_KINDS, scope
-        assert metaclass is MISSING or scope.kind is ScopeKind.CLASS, scope
+        assert [
+            base_index
+            for base_index, base in enumerate(bases)
+            if base.kind in (ObjectKind.UNKNOWN, ObjectKind.UNKNOWN_CLASS)
+        ] <= [len(bases) - 1]
         (
             self._attributes,
             self._bases,
@@ -236,7 +239,7 @@ class Class:
             f'{type(self).__qualname__}('
             f'{self._scope!r}'
             f'{", " * bool(self._bases)}'
-            f'{", ".join(map(repr, self._bases))},'
+            f'{", ".join(map(repr, self._bases))}, '
             f'metaclass={self._metaclass}'
             ')'
         )
@@ -633,7 +636,7 @@ class Method:
         )
 
     @property
-    def routine(self, /) -> Routine:
+    def routine(self, /) -> CallableObject:
         return self._routine
 
     def as_object(self, /) -> AttributeMapping:
@@ -646,6 +649,9 @@ class Method:
 
     def get_attribute(self, name: str, /) -> Object:
         return self.strict_get_attribute(name)
+
+    def get_mutable_attribute(self, name: str, /) -> MutableObject:
+        return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
 
     def get_mutable_nested_attribute(
         self, local_path: LocalObjectPath, /
@@ -687,7 +693,7 @@ class Method:
 
     _instance: Object
     _objects: dict[str, Object]
-    _routine: Routine
+    _routine: CallableObject
     _values: dict[str, Any]
 
     __slots__ = '_instance', '_objects', '_routine', '_values'
@@ -704,7 +710,7 @@ class Method:
             else NotImplemented
         )
 
-    def __init__(self, routine: Routine, instance: Object, /) -> None:
+    def __init__(self, routine: CallableObject, instance: Object, /) -> None:
         (self._instance, self._objects, self._routine, self._values) = (
             instance,
             {'__self__': instance, '__func__': routine},
@@ -719,6 +725,10 @@ class Method:
 
 
 class Routine:
+    @property
+    def ast_node(self, /) -> AnyFunctionDefinitionAstNode | None:
+        return self._ast_node
+
     @property
     def kind(self, /) -> Literal[ObjectKind.ROUTINE]:
         return ObjectKind.ROUTINE
@@ -833,6 +843,7 @@ class Routine:
                     return candidate
             raise
 
+    _ast_node: AnyFunctionDefinitionAstNode | None
     _base_classes: Sequence[Class | UnknownObject]
     _module_path: ModulePath
     _local_path: LocalObjectPath
@@ -840,6 +851,7 @@ class Routine:
     _values: dict[str, Any]
 
     __slots__ = (
+        '_ast_node',
         '_base_classes',
         '_local_path',
         '_module_path',
@@ -866,14 +878,16 @@ class Routine:
         local_path: LocalObjectPath,
         /,
         *base_classes: Class | UnknownObject,
+        ast_node: AnyFunctionDefinitionAstNode | None,
     ) -> None:
         (
+            self._ast_node,
             self._base_classes,
             self._local_path,
             self._module_path,
             self._objects,
             self._values,
-        ) = base_classes, local_path, module_path, {}, {}
+        ) = ast_node, base_classes, local_path, module_path, {}, {}
 
     def __repr__(self, /) -> str:
         return (
@@ -1155,8 +1169,21 @@ MUTABLE_OBJECT_CLASSES: Final = (
     Call,
     UnknownObject,
 )
+assert get_args(MutableObject) == MUTABLE_OBJECT_CLASSES
 ImmutableObject: TypeAlias = Method
 Object: TypeAlias = ImmutableObject | MutableObject
+CallableObject: TypeAlias = (
+    Class | PlainObject | Routine | Call | Method | UnknownObject
+)
+CALLABLE_OBJECT_CLASSES: Final = (
+    Class,
+    PlainObject,
+    Routine,
+    Call,
+    Method,
+    UnknownObject,
+)
+assert get_args(CallableObject) == CALLABLE_OBJECT_CLASSES
 
 
 ClassObjectKind: TypeAlias = Literal[
