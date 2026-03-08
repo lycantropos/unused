@@ -171,10 +171,10 @@ def _(
     if value_object is None:
         return None
     if (
-        value_object.kind is ObjectKind.INSTANCE
-        and value_object.module_path == SYS_MODULE_PATH
+        value_object.module_path == SYS_MODULE_PATH
         and value_object.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
     ):
+        assert value_object.kind is ObjectKind.INSTANCE, value_object
         try:
             module_name = evaluate_expression_node(
                 node.slice, scope, *parent_scopes, context=context

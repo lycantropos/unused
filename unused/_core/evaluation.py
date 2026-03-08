@@ -48,6 +48,51 @@ def _(
     )
 
 
+@evaluate_expression_node.register(ast.JoinedStr)
+def _(
+    node: ast.JoinedStr,
+    scope: Scope,
+    /,
+    *parent_scopes: Scope,
+    context: Context,
+) -> Any:
+    return ''.join(
+        evaluate_expression_node(
+            value_node, scope, *parent_scopes, context=context
+        )
+        for value_node in node.values
+    )
+
+
+@evaluate_expression_node.register(ast.FormattedValue)
+def _(
+    node: ast.FormattedValue,
+    scope: Scope,
+    /,
+    *parent_scopes: Scope,
+    context: Context,
+) -> Any:
+    value = evaluate_expression_node(
+        node.value, scope, *parent_scopes, context=context
+    )
+    if node.conversion == ord('r'):
+        value = repr(value)
+    elif node.conversion == ord('s'):
+        value = str(value)
+    elif node.conversion == ord('a'):
+        value = ascii(value)
+    return (
+        format(
+            value,
+            evaluate_expression_node(
+                node.format_spec, scope, *parent_scopes, context=context
+            ),
+        )
+        if node.format_spec is not None
+        else format(value)
+    )
+
+
 _ALLOWED_CALLABLES: Final[
     Mapping[tuple[ModulePath, LocalObjectPath], Callable[..., Any]]
 ] = {

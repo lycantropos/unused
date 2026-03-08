@@ -8,7 +8,7 @@ from typing import Any, TypeAlias
 
 from typing_extensions import Self
 
-from unused._core.context import Context, FunctionCallContext
+from unused._core.context import Context
 
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind
@@ -210,16 +210,16 @@ def _(
     if value_object is None:
         return None
     if (
-        value_object.kind is ObjectKind.INSTANCE
-        and value_object.module_path == SYS_MODULE_PATH
+        value_object.module_path == SYS_MODULE_PATH
         and value_object.local_path == SYS_MODULES_LOCAL_OBJECT_PATH
     ):
+        assert value_object.kind is ObjectKind.INSTANCE, value_object
         try:
             module_name = evaluate_expression_node(
                 node.slice, scope, *parent_scopes, context=context
             )
         except EVALUATION_EXCEPTIONS:
-            assert not isinstance(context, FunctionCallContext)
+            return None
         else:
             assert isinstance(module_name, str), module_name
             return ResolvedAssignmentTargetSplitPath(
@@ -227,7 +227,6 @@ def _(
                 LocalObjectPath(),
                 LocalObjectPath(),
             )
-        return None
     if not (
         value_object.kind is ObjectKind.INSTANCE
         and value_object.module_path == scope.module_path

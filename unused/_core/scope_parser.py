@@ -6,7 +6,6 @@ import contextlib
 import enum
 import functools
 import operator
-import signal
 from collections.abc import Mapping, MutableMapping, Sequence
 from importlib.machinery import EXTENSION_SUFFIXES
 from itertools import chain, repeat, takewhile
@@ -42,6 +41,7 @@ from .object_path import (
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
+    TYPES_CODE_TYPE_LOCAL_OBJECT_PATH,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
 )
 from .resolution import (
@@ -1265,6 +1265,12 @@ class ScopeParser(ast.NodeVisitor):
                     wrapped_object = Routine(
                         self._scope.module_path,
                         function_local_path.join('__func__'),
+                        ensure_type(
+                            TYPES_MODULE.get_nested_attribute(
+                                TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                            ),
+                            Class,
+                        ),
                         ast_node=node,
                     )
                     function_object.set_attribute('__func__', wrapped_object)
@@ -1280,6 +1286,20 @@ class ScopeParser(ast.NodeVisitor):
                     Class,
                 ),
                 ast_node=node,
+            )
+            function_object.set_attribute(
+                '__code__',
+                PlainObject(
+                    ObjectKind.INSTANCE,
+                    self._scope.module_path,
+                    function_local_path.join('__code__'),
+                    ensure_type(
+                        TYPES_MODULE.get_nested_attribute(
+                            TYPES_CODE_TYPE_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
+                    ),
+                ),
             )
         if (
             function_name == '__getattr__'
@@ -1420,9 +1440,7 @@ def _load_module_by_path(
         )
     elif module_file_path.name.endswith(tuple(EXTENSION_SUFFIXES)):
         MODULES[module_path] = result = Module(
-            Scope(
-                ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath()
-            )
+            Scope(ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath())
         )
     else:
         module_source_text = module_file_path.read_text(encoding='utf-8')

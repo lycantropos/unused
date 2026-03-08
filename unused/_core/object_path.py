@@ -89,6 +89,13 @@ class LocalObjectPath:
     COMPONENT_SEPARATOR: ClassVar = '.'
 
     @classmethod
+    def checked_from_object_name(cls, name: str, /) -> Self | None:
+        try:
+            return cls(*name.split(cls.COMPONENT_SEPARATOR))
+        except ValueError:
+            return None
+
+    @classmethod
     def from_object_name(cls, name: str, /) -> Self:
         return cls(*name.split(cls.COMPONENT_SEPARATOR))
 
@@ -251,6 +258,13 @@ SYS_MODULES_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
     'modules'
 )
 assert _search_local_path(SYS_MODULES_LOCAL_OBJECT_PATH, sys) is sys.modules
+TYPES_CODE_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
+    'CodeType'
+)
+assert (
+    _search_local_path(TYPES_CODE_TYPE_LOCAL_OBJECT_PATH, types)
+    is types.CodeType
+)
 TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
     LocalObjectPath('FunctionType')
 )

@@ -817,7 +817,6 @@ class Routine:
         self, local_path: LocalObjectPath, value: Any, /
     ) -> None:
         assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(self.get_nested_attribute(local_path), PlainObject)
         assert value is not MISSING
         object_: Object = self
         for component in local_path.components[:-1]:

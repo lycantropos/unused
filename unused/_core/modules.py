@@ -7,6 +7,7 @@ import inspect
 import operator
 import sys
 import types
+import typing
 from ast import AsyncFunctionDef, ClassDef, FunctionDef
 from collections import deque
 from collections.abc import (
@@ -19,7 +20,7 @@ from collections.abc import (
 from functools import partial, reduce, singledispatch, singledispatchmethod
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
-from typing import Any, ClassVar, Final, TypeAlias, TypeVar
+from typing import Any, ClassVar, Final, NewType, TypeAlias, TypeVar
 
 from typing_extensions import TypeIs, override
 
@@ -245,11 +246,17 @@ class DefinitionAstNodeParser(ast.NodeVisitor):
         value_module_path, value_local_path = value_path
         attribute_local_path = value_local_path.join(node.attr)
         if value_module_path != self._module_path:
+            module: types.ModuleType | None = None
             if value_module_path == SYS_MODULE_PATH:
-                return reduce(getattr, attribute_local_path.components, sys)
-            if value_module_path == TYPING_MODULE_PATH:
-                _ = 1
-            raise _NonStaticallyEvaluatableAstNodeError(node)
+                module = sys
+            elif value_module_path == TYPING_MODULE_PATH:
+                module = typing
+            if module is None:
+                raise _NonStaticallyEvaluatableAstNodeError(node)
+            try:
+                return reduce(getattr, attribute_local_path.components, module)
+            except AttributeError:
+                raise _NonStaticallyEvaluatableAstNodeError(node) from None
         try:
             initial_value = self._values[attribute_local_path.components[0]]
         except KeyError:
@@ -430,12 +437,15 @@ MODULE_NAMES: Final[Mapping[types.ModuleType, Sequence[str]]] = (
 def _locate_values(
     value: Any,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],  # noqa: ARG001
+    mentioned_module_paths: MutableMapping[  # noqa: ARG001
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],  # noqa: ARG001
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],  # noqa: ARG001
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],  # noqa: ARG001
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],  # noqa: ARG001
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],  # noqa: ARG001
 ) -> None:
     if value_path is not None:
         _set_absent_key(located_rest_values, value_path, value)
@@ -445,12 +455,15 @@ def _locate_values(
 def _(
     value: type[Any],
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     if value_path is None:
         value_module_path = None
@@ -468,18 +481,24 @@ def _(
                 module,
                 (module_path, LocalObjectPath()),
                 mentioned_module_paths,
-                all_value_paths=all_value_paths,
                 located_namespace_values=located_namespace_values,
                 located_rest_values=located_rest_values,
+                namespace_value_id_paths=namespace_value_id_paths,
+                namespace_value_id_values=namespace_value_id_values,
             )
     if value_path is None:
         return
     value_module_path, value_local_path = value_path
     try:
-        value_paths = all_value_paths[value]
+        value_paths = namespace_value_id_paths[_namespace_value_id(value)]
     except KeyError:
         _set_absent_key(located_namespace_values, value_path, value)
-        _set_absent_key(all_value_paths, value, [value_path])
+        _set_absent_key(
+            namespace_value_id_paths, _namespace_value_id(value), [value_path]
+        )
+        _set_absent_key(
+            namespace_value_id_values, _namespace_value_id(value), value
+        )
     else:
         if value_path in value_paths:
             return
@@ -494,11 +513,18 @@ def _(
             return
         _set_absent_key(located_namespace_values, value_path, value)
         value_paths.append(value_path)
+    value_dict = vars(value)
     for field_name in dir(value):
         try:
-            field_value = getattr(value, field_name)
-        except AttributeError:
-            continue
+            field_value = value_dict[field_name]
+        except KeyError:
+            try:
+                field_value = getattr(value, field_name)
+            except AttributeError:
+                continue
+            is_dynamic_field = field_value is not getattr(value, field_name)
+            if is_dynamic_field:
+                continue
         _locate_values(
             field_value,
             (
@@ -507,18 +533,20 @@ def _(
                 else (value_module_path, value_local_path.join(field_name))
             ),
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
     for base in value.__bases__:
         _locate_values(
             base,
             None,
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
 
 
@@ -526,12 +554,15 @@ def _(
 def _(
     value: types.ModuleType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     if value_path is None:
         value_module_path = None
@@ -545,9 +576,10 @@ def _(
             module,
             (ModulePath.from_module_name(self_module_name), LocalObjectPath()),
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
         for module_name in MODULE_NAMES.get(value, []):
             module_path = ModulePath.from_module_name(module_name)
@@ -556,9 +588,10 @@ def _(
                     value,
                     (module_path, LocalObjectPath()),
                     mentioned_module_paths,
-                    all_value_paths=all_value_paths,
                     located_namespace_values=located_namespace_values,
                     located_rest_values=located_rest_values,
+                    namespace_value_id_paths=namespace_value_id_paths,
+                    namespace_value_id_values=namespace_value_id_values,
                 )
     elif value in sys.modules.values():
         self_module_path = ModulePath.from_module_name(self_module_name)
@@ -572,9 +605,10 @@ def _(
                 module,
                 (self_module_path, LocalObjectPath()),
                 mentioned_module_paths,
-                all_value_paths=all_value_paths,
                 located_namespace_values=located_namespace_values,
                 located_rest_values=located_rest_values,
+                namespace_value_id_paths=namespace_value_id_paths,
+                namespace_value_id_values=namespace_value_id_values,
             )
     for module_name in MODULE_NAMES.get(value, []):
         _register_module_path(
@@ -586,11 +620,13 @@ def _(
         return
     value_module_path, value_local_path = value_path
     _register_module_path(mentioned_module_paths, value, value_path)
+    value_id = _namespace_value_id(value)
     try:
-        value_paths = all_value_paths[value]
+        value_paths = namespace_value_id_paths[value_id]
     except KeyError:
         _set_absent_key(located_namespace_values, value_path, value)
-        _set_absent_key(all_value_paths, value, [value_path])
+        _set_absent_key(namespace_value_id_paths, value_id, [value_path])
+        _set_absent_key(namespace_value_id_values, value_id, value)
     else:
         if value_path in value_paths:
             return
@@ -607,18 +643,26 @@ def _(
         value_paths.append(value_path)
     if value in sys.modules.values() and len(value_local_path.components) > 0:
         return
+    value_dict = vars(value)
     for field_name in dir(value):
         try:
-            field_value = getattr(value, field_name)
-        except Exception:
-            continue
+            field_value = value_dict[field_name]
+        except KeyError:
+            try:
+                field_value = getattr(value, field_name)
+            except AttributeError:
+                continue
+            is_dynamic_field = field_value is not getattr(value, field_name)
+            if is_dynamic_field:
+                continue
         _locate_values(
             field_value,
             (value_module_path, value_local_path.join(field_name)),
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
 
 
@@ -627,12 +671,15 @@ def _(
 def _(
     value: types.BuiltinFunctionType | types.BuiltinMethodType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     instance = value.__self__
     if value_path is not None:
@@ -645,10 +692,21 @@ def _(
             or instance not in parent_value.__mro__[1:]
         ):
             try:
-                value_paths = all_value_paths[value]
+                value_paths = namespace_value_id_paths[
+                    _namespace_value_id(value)
+                ]
             except KeyError:
                 _set_absent_key(located_namespace_values, value_path, value)
-                _set_absent_key(all_value_paths, value, [value_path])
+                _set_absent_key(
+                    namespace_value_id_paths,
+                    _namespace_value_id(value),
+                    [value_path],
+                )
+                _set_absent_key(
+                    namespace_value_id_values,
+                    _namespace_value_id(value),
+                    value,
+                )
             else:
                 if value_path in value_paths:
                     return
@@ -667,9 +725,10 @@ def _(
         instance,
         None,
         mentioned_module_paths,
-        all_value_paths=all_value_paths,
         located_namespace_values=located_namespace_values,
         located_rest_values=located_rest_values,
+        namespace_value_id_paths=namespace_value_id_paths,
+        namespace_value_id_values=namespace_value_id_values,
     )
 
 
@@ -677,12 +736,15 @@ def _(
 def _(
     value: types.MethodType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     instance = value.__self__
     if value_path is not None:
@@ -695,10 +757,21 @@ def _(
             or instance not in parent_value.__mro__[1:]
         ):
             try:
-                value_paths = all_value_paths[value]
+                value_paths = namespace_value_id_paths[
+                    _namespace_value_id(value)
+                ]
             except KeyError:
                 _set_absent_key(located_namespace_values, value_path, value)
-                _set_absent_key(all_value_paths, value, [value_path])
+                _set_absent_key(
+                    namespace_value_id_paths,
+                    _namespace_value_id(value),
+                    [value_path],
+                )
+                _set_absent_key(
+                    namespace_value_id_values,
+                    _namespace_value_id(value),
+                    value,
+                )
             else:
                 if value_path in value_paths:
                     return
@@ -717,9 +790,10 @@ def _(
         instance,
         None,
         mentioned_module_paths,
-        all_value_paths=all_value_paths,
         located_namespace_values=located_namespace_values,
         located_rest_values=located_rest_values,
+        namespace_value_id_paths=namespace_value_id_paths,
+        namespace_value_id_values=namespace_value_id_values,
     )
 
 
@@ -730,12 +804,15 @@ def _(
 def _(
     value: _AnyDescriptorType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     object_class = value.__objclass__
     if value_path is not None:
@@ -748,10 +825,21 @@ def _(
             or object_class not in parent_value.__mro__[1:]
         ):
             try:
-                value_paths = all_value_paths[value]
+                value_paths = namespace_value_id_paths[
+                    _namespace_value_id(value)
+                ]
             except KeyError:
                 _set_absent_key(located_namespace_values, value_path, value)
-                _set_absent_key(all_value_paths, value, [value_path])
+                _set_absent_key(
+                    namespace_value_id_paths,
+                    _namespace_value_id(value),
+                    [value_path],
+                )
+                _set_absent_key(
+                    namespace_value_id_values,
+                    _namespace_value_id(value),
+                    value,
+                )
             else:
                 if value_path in value_paths:
                     return
@@ -770,9 +858,10 @@ def _(
         object_class,
         None,
         mentioned_module_paths,
-        all_value_paths=all_value_paths,
         located_namespace_values=located_namespace_values,
         located_rest_values=located_rest_values,
+        namespace_value_id_paths=namespace_value_id_paths,
+        namespace_value_id_values=namespace_value_id_values,
     )
 
 
@@ -780,20 +869,30 @@ def _(
 def _(
     value: types.ClassMethodDescriptorType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     if value_path is not None:
         value_module_path, value_local_path = value_path
         try:
-            value_paths = all_value_paths[value]
+            value_paths = namespace_value_id_paths[_namespace_value_id(value)]
         except KeyError:
             _set_absent_key(located_namespace_values, value_path, value)
-            _set_absent_key(all_value_paths, value, [value_path])
+            _set_absent_key(
+                namespace_value_id_paths,
+                _namespace_value_id(value),
+                [value_path],
+            )
+            _set_absent_key(
+                namespace_value_id_values, _namespace_value_id(value), value
+            )
         else:
             if value_path in value_paths:
                 return
@@ -806,44 +905,61 @@ def _(
             )
             _set_absent_key(located_namespace_values, value_path, value)
             value_paths.append(value_path)
-    if (wrapped := getattr(value, '__wrapped__', None)) is not None:
+    if (callable_ := getattr(value, '__func__', None)) is not None:
         _locate_values(
-            wrapped,
+            callable_,
             None,
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
     else:
         _locate_values(
             value.__objclass__,
             None,
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
+
+
+def _namespace_value_id(value: _NamespaceValue, /) -> _Id:
+    assert _is_namespace_value(value), value
+    return _Id(id(value))
 
 
 @_locate_values.register(types.FunctionType)
 def _(
     value: types.FunctionType,
     value_path: ObjectPath | None,
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     /,
     *,
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
-    located_rest_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     if value_path is not None:
         value_module_path, value_local_path = value_path
         try:
-            value_paths = all_value_paths[value]
+            value_paths = namespace_value_id_paths[_namespace_value_id(value)]
         except KeyError:
             _set_absent_key(located_namespace_values, value_path, value)
-            _set_absent_key(all_value_paths, value, [value_path])
+            _set_absent_key(
+                namespace_value_id_paths,
+                _namespace_value_id(value),
+                [value_path],
+            )
+            _set_absent_key(
+                namespace_value_id_values, _namespace_value_id(value), value
+            )
         else:
             if value_path in value_paths:
                 return
@@ -871,14 +987,17 @@ def _(
             module,
             module_object_path,
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
 
 
 def _register_module_path(
-    mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]],
+    mentioned_module_paths: MutableMapping[
+        types.ModuleType, dict[ObjectPath, None]
+    ],
     module: types.ModuleType,
     module_object_path: ObjectPath,
     /,
@@ -908,11 +1027,31 @@ def _checked_find_module_by_name(
     )
 
 
+_AnyDescriptorType: TypeAlias = (
+    types.GetSetDescriptorType
+    | types.MemberDescriptorType
+    | types.MethodDescriptorType
+    | types.WrapperDescriptorType
+)
+_NamespaceValue: TypeAlias = (
+    _AnyDescriptorType
+    | types.BuiltinFunctionType
+    | types.BuiltinMethodType
+    | types.ClassMethodDescriptorType
+    | types.FunctionType
+    | types.MethodType
+    | types.ModuleType
+    | type[Any]
+)
+_Id = NewType('_Id', int)
+
+
 def _parse_modules(
     *modules: types.ModuleType,
 ) -> MutableMapping[ModulePath, MutableObject]:
     mentioned_module_paths: dict[types.ModuleType, dict[ObjectPath, None]] = {}
-    all_value_paths: dict[_NamespaceValue, list[ObjectPath]] = {}
+    namespace_value_id_paths: dict[_Id, list[ObjectPath]] = {}
+    namespace_value_id_values: dict[_Id, _NamespaceValue] = {}
     located_namespace_values: dict[ObjectPath, _NamespaceValue] = {}
     located_rest_values: dict[ObjectPath, Any] = {}
     for module in modules:
@@ -925,18 +1064,19 @@ def _parse_modules(
             module,
             (ModulePath.from_module_name(module_name), LocalObjectPath()),
             mentioned_module_paths,
-            all_value_paths=all_value_paths,
             located_namespace_values=located_namespace_values,
             located_rest_values=located_rest_values,
+            namespace_value_id_paths=namespace_value_id_paths,
+            namespace_value_id_values=namespace_value_id_values,
         )
-    module_origin_paths: dict[types.ModuleType, ObjectPath] = {}
+    namespace_value_id_origin_paths: dict[_Id, ObjectPath] = {}
     references: dict[ObjectPath, ObjectPath] = {}
     _locate_module_origins(
         [
             (module, list(module_paths))
             for module, module_paths in mentioned_module_paths.items()
         ],
-        module_origin_paths=module_origin_paths,
+        module_origin_id_paths=namespace_value_id_origin_paths,
         references=references,
     )
     module_definition_nodes: dict[
@@ -946,33 +1086,43 @@ def _parse_modules(
             Sequence[AnyFunctionDefinitionAstNode | ast.ClassDef],
         ],
     ] = {}
-    namespace_value_origin_paths: dict[_NamespaceValue, ObjectPath] = {}
-    namespace_value_origin_paths.update(module_origin_paths.items())
     _locate_non_module_namespace_objects(
-        all_value_paths,
-        value_origin_paths=namespace_value_origin_paths,
+        namespace_value_id_paths,
+        namespace_value_id_values,
         located_namespace_values=located_namespace_values,
         module_definition_nodes=module_definition_nodes,
+        namespace_value_id_origin_paths=namespace_value_id_origin_paths,
         references=references,
     )
-    assert len(namespace_value_origin_paths) == len(all_value_paths), [
+    assert len(namespace_value_id_origin_paths) == len(
+        namespace_value_id_paths
+    ), [
         value
-        for value in all_value_paths
-        if value not in namespace_value_origin_paths
+        for value in namespace_value_id_paths
+        if value not in namespace_value_id_origin_paths
     ]
-    for value_origin_path in namespace_value_origin_paths.values():
-        origin_module_path, origin_local_path = value_origin_path
-        if len(origin_local_path.components) == 0:
+    for (
+        value_origin_module_path,
+        value_origin_local_path,
+    ) in namespace_value_id_origin_paths.values():
+        if len(value_origin_local_path.components) == 0:
             continue
-        parent_origin_path = (origin_module_path, origin_local_path.parent)
+        parent_origin_path = (
+            value_origin_module_path,
+            value_origin_local_path.parent,
+        )
         assert (
-            namespace_value_origin_paths[
-                located_namespace_values[parent_origin_path]
+            namespace_value_id_origin_paths[
+                _namespace_value_id(
+                    located_namespace_values[parent_origin_path]
+                )
             ]
             == parent_origin_path
         ), (
-            namespace_value_origin_paths[
-                located_namespace_values[parent_origin_path]
+            namespace_value_id_origin_paths[
+                _namespace_value_id(
+                    located_namespace_values[parent_origin_path]
+                )
             ],
             parent_origin_path,
         )
@@ -990,14 +1140,15 @@ def _parse_modules(
         located_namespace_values=located_namespace_values,
         metacls_paths=metacls_paths,
         method_component_paths=method_component_paths,
-        value_origin_paths=namespace_value_origin_paths,
+        namespace_value_id_origin_paths=namespace_value_id_origin_paths,
+        namespace_value_id_values=namespace_value_id_values,
     )
     _collect_rest_object_dependencies(
         dependencies,
         instance_cls_paths=instance_cls_paths,
         located_namespace_values=located_namespace_values,
         located_rest_values=located_rest_values,
-        value_origin_paths=namespace_value_origin_paths,
+        namespace_value_id_origin_paths=namespace_value_id_origin_paths,
     )
     topologically_sorted_value_paths = [
         *graphlib.TopologicalSorter(dependencies).static_order()
@@ -1185,7 +1336,9 @@ def _parse_modules(
                             ),
                             _path_to_object(
                                 result,
-                                namespace_value_origin_paths[builtins.tuple],
+                                namespace_value_id_origin_paths[
+                                    _namespace_value_id(builtins.tuple)
+                                ],
                             ),
                         ),
                     )
@@ -1203,13 +1356,29 @@ def _parse_modules(
                             ),
                             _path_to_object(
                                 result,
-                                namespace_value_origin_paths[builtins.dict],
+                                namespace_value_id_origin_paths[
+                                    _namespace_value_id(builtins.dict)
+                                ],
                             ),
                         ),
                     )
                     value_object.set_value(
                         FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
                         value.__kwdefaults__ or {},
+                    )
+                    value_object.set_attribute(
+                        '__code__',
+                        PlainObject(
+                            ObjectKind.INSTANCE,
+                            value_module_path,
+                            value_local_path.join('__code__'),
+                            _path_to_object(
+                                result,
+                                namespace_value_id_origin_paths[
+                                    _namespace_value_id(types.CodeType)
+                                ],
+                            ),
+                        ),
                     )
         value_module_object = result[value_module_path]
         value_module_object.set_nested_attribute(
@@ -1246,11 +1415,11 @@ def _parse_modules(
 
 
 def _locate_non_module_namespace_objects(
-    all_value_paths: Mapping[_NamespaceValue, list[ObjectPath]],
+    namespace_value_id_paths: Mapping[_Id, Sequence[ObjectPath]],
+    namespace_value_id_values: Mapping[_Id, _NamespaceValue],
     /,
     *,
-    value_origin_paths: MutableMapping[_NamespaceValue, ObjectPath],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
     module_definition_nodes: dict[
         ModulePath,
         Mapping[
@@ -1258,15 +1427,16 @@ def _locate_non_module_namespace_objects(
             Sequence[AsyncFunctionDef | FunctionDef | ClassDef],
         ],
     ],
+    namespace_value_id_origin_paths: MutableMapping[_Id, ObjectPath],
     references: dict[
         tuple[ModulePath, LocalObjectPath], tuple[ModulePath, LocalObjectPath]
     ],
 ) -> None:
-    topologically_sorted_values = (
+    topologically_sorted_value_ids = (
         _to_topologically_sorted_sequence_resolving_cycles_by_deletion(
             {
-                value: {
-                    parent_value
+                value_id: {
+                    _namespace_value_id(parent_value)
                     for path in value_paths
                     for parent_path in _to_parent_paths(path)
                     if (
@@ -1281,21 +1451,26 @@ def _locate_non_module_namespace_objects(
                         and not inspect.ismodule(parent_value)
                     )
                 }
-                for value, value_paths in all_value_paths.items()
-                if not inspect.ismodule(value)
+                for value_id, value_paths in namespace_value_id_paths.items()
+                if not inspect.ismodule(namespace_value_id_values[value_id])
             }
         )
     )
-    for value in topologically_sorted_values:
-        value_paths = all_value_paths[value]
+    for value_id in topologically_sorted_value_ids:
+        value_paths = namespace_value_id_paths[value_id]
+        value = namespace_value_id_values[value_id]
         assert not inspect.ismodule(value)
         assert len(value_paths) > 0
         original_module_value_paths = [
             (module_path, local_path)
             for module_path, local_path in value_paths
             if (
-                value_origin_paths[
-                    located_namespace_values[module_path, LocalObjectPath()]
+                namespace_value_id_origin_paths[
+                    _namespace_value_id(
+                        located_namespace_values[
+                            module_path, LocalObjectPath()
+                        ]
+                    )
                 ]
                 == (module_path, LocalObjectPath())
             )
@@ -1305,8 +1480,10 @@ def _locate_non_module_namespace_objects(
             for object_path in original_module_value_paths
             if all(
                 (
-                    value_origin_paths.get(
-                        located_namespace_values[parent_path]
+                    namespace_value_id_origin_paths.get(
+                        _namespace_value_id(
+                            located_namespace_values[parent_path]
+                        )
                     )
                     in (None, parent_path)
                 )
@@ -1318,8 +1495,12 @@ def _locate_non_module_namespace_objects(
         except ValueError:
             pass
         else:
-            _set_absent_key(value_origin_paths, value, origin_path)
+            _set_absent_key(
+                namespace_value_id_origin_paths, value_id, origin_path
+            )
             continue
+        if isinstance(value, classmethod):
+            value = value.__func__
         if inspect.isclass(value):
             origin_path = _to_cls_origin_path(
                 value,
@@ -1341,7 +1522,20 @@ def _locate_non_module_namespace_objects(
                 located_values=located_namespace_values,
             )
         elif inspect.ismethod(value):
-            origin_path = original_parent_subvalue_paths[0]
+            instance = value.__self__
+            if _is_namespace_value(instance):
+                instance_origin_path = namespace_value_id_origin_paths[
+                    _namespace_value_id(instance)
+                ]
+                instance_origin_module_path, instance_origin_local_path = (
+                    instance_origin_path
+                )
+                origin_path = (
+                    instance_origin_module_path,
+                    instance_origin_local_path.join(value.__func__.__name__),
+                )
+            else:
+                origin_path = original_parent_subvalue_paths[0]
         else:
             assert isinstance(value, _AnyDescriptorType), value_paths
             origin_path = _to_any_descriptor_origin_path(
@@ -1350,7 +1544,7 @@ def _locate_non_module_namespace_objects(
                 located_values=located_namespace_values,
                 module_definition_nodes=module_definition_nodes,
             )
-        _set_absent_key(value_origin_paths, value, origin_path)
+        _set_absent_key(namespace_value_id_origin_paths, value_id, origin_path)
         for candidate_path in value_paths:
             if candidate_path == origin_path:
                 continue
@@ -1362,23 +1556,31 @@ def _collect_rest_object_dependencies(
     /,
     *,
     instance_cls_paths: MutableMapping[ObjectPath, ObjectPath],
-    located_namespace_values: dict[ObjectPath, _NamespaceValue],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
     located_rest_values: dict[tuple[ModulePath, LocalObjectPath], Any],
-    value_origin_paths: dict[Any, tuple[ModulePath, LocalObjectPath]],
+    namespace_value_id_origin_paths: dict[
+        Any, tuple[ModulePath, LocalObjectPath]
+    ],
 ) -> None:
     for value_path, value in located_rest_values.items():
         assert not _is_namespace_value(value), value_path
         value_module_path, value_local_path = value_path
         value_parent_path = (value_module_path, value_local_path.parent)
         if (
-            value_origin_paths[located_namespace_values[value_parent_path]]
+            namespace_value_id_origin_paths[
+                _namespace_value_id(
+                    located_namespace_values[value_parent_path]
+                )
+            ]
             != value_parent_path
         ):
             continue
         value_dependencies = {value_parent_path}
         _set_absent_key(dependencies, value_path, value_dependencies)
         if (
-            instance_cls_path := value_origin_paths.get(type(value))
+            instance_cls_path := namespace_value_id_origin_paths.get(
+                _namespace_value_id(type(value))
+            )
         ) is not None:
             instance_cls_paths[value_path] = instance_cls_path
             value_dependencies.add(instance_cls_path)
@@ -1395,11 +1597,13 @@ def _collect_namespace_object_dependencies(
     method_component_paths: MutableMapping[
         ObjectPath, tuple[ObjectPath, ObjectPath]
     ],
-    value_origin_paths: dict[Any, ObjectPath],
+    namespace_value_id_origin_paths: dict[_Id, ObjectPath],
+    namespace_value_id_values: Mapping[_Id, _NamespaceValue],
 ) -> None:
-    for value, value_path in value_origin_paths.copy().items():
+    for value_id, value_path in namespace_value_id_origin_paths.copy().items():
+        value = namespace_value_id_values[value_id]
         if inspect.ismodule(value):
-            dependencies[value_origin_paths[value]] = set()
+            dependencies[namespace_value_id_origin_paths[value_id]] = set()
             continue
         value_module_path, value_local_path = value_path
         value_dependencies = dependencies.setdefault(value_path, set())
@@ -1407,13 +1611,17 @@ def _collect_namespace_object_dependencies(
         value_parent_path = (value_module_path, value_local_path.parent)
         assert (
             parent_value := located_namespace_values.get(value_parent_path)
-        ) is None or value_origin_paths[parent_value] == value_parent_path
+        ) is None or namespace_value_id_origin_paths[
+            _namespace_value_id(parent_value)
+        ] == value_parent_path
         value_dependencies.add(value_parent_path)
         if inspect.isclass(value):
             base_cls_paths[value_path] = origin_base_cls_paths = []
             for base_cls in value.__bases__:
                 try:
-                    origin_base_cls_path = value_origin_paths[base_cls]
+                    origin_base_cls_path = namespace_value_id_origin_paths[
+                        _namespace_value_id(base_cls)
+                    ]
                 except KeyError:
                     origin_base_cls_path = (
                         ModulePath.from_module_name(base_cls.__module__),
@@ -1431,11 +1639,17 @@ def _collect_namespace_object_dependencies(
                 )
                 and value is not builtins.object
             ):
-                value_dependencies.add(value_origin_paths[builtins.object])
+                value_dependencies.add(
+                    namespace_value_id_origin_paths[
+                        _namespace_value_id(builtins.object)
+                    ]
+                )
             if not _is_metaclass(value) and value is not builtins.object:
                 metacls = type(value)
                 try:
-                    origin_metacls_path = value_origin_paths[metacls]
+                    origin_metacls_path = namespace_value_id_origin_paths[
+                        _namespace_value_id(metacls)
+                    ]
                 except KeyError:
                     origin_metacls_path = (
                         ModulePath.from_module_name(metacls.__module__),
@@ -1446,7 +1660,9 @@ def _collect_namespace_object_dependencies(
                 metacls_paths[value_path] = origin_metacls_path
         else:
             try:
-                origin_cls_path = value_origin_paths[type(value)]
+                origin_cls_path = namespace_value_id_origin_paths[
+                    _namespace_value_id(type(value))
+                ]
             except KeyError:
                 pass
             else:
@@ -1461,14 +1677,14 @@ def _collect_namespace_object_dependencies(
                         ]
                         is method_instance
                     ) and inspect.isroutine(value_callable := value.__func__):
-                        value_origin_paths[value_callable] = (
-                            value_origin_paths.pop(value)
-                        )
+                        namespace_value_id_origin_paths[
+                            _namespace_value_id(value_callable)
+                        ] = namespace_value_id_origin_paths.pop(value_id)
                         located_namespace_values[value_path] = value_callable
                         continue
                     try:
-                        method_instance_path = value_origin_paths[
-                            method_instance
+                        method_instance_path = namespace_value_id_origin_paths[
+                            _namespace_value_id(method_instance)
                         ]
                     except KeyError:
                         method_instance_path = (
@@ -1485,13 +1701,13 @@ def _collect_namespace_object_dependencies(
                     assert not inspect.ismodule(method_instance)
                     method_instance_path = None
                 method_callable = value.__func__
-                try:
-                    method_callable_path = value_origin_paths[method_callable]
-                except KeyError:
-                    method_callable_path = None
-                else:
-                    assert method_callable_path is not None
+                if _is_namespace_value(method_callable):
+                    method_callable_path = namespace_value_id_origin_paths[
+                        _namespace_value_id(method_callable)
+                    ]
                     value_dependencies.add(method_callable_path)
+                else:
+                    method_callable_path = None
                 if (
                     method_callable_path is not None
                     and method_instance_path is not None
@@ -1506,8 +1722,8 @@ def _collect_namespace_object_dependencies(
                     method_instance
                 ):
                     try:
-                        method_instance_path = value_origin_paths[
-                            method_instance
+                        method_instance_path = namespace_value_id_origin_paths[
+                            _namespace_value_id(method_instance)
                         ]
                     except KeyError:
                         pass
@@ -1515,29 +1731,47 @@ def _collect_namespace_object_dependencies(
                         value_dependencies.add(method_instance_path)
                 else:
                     try:
-                        method_instance_cls_path = value_origin_paths[
-                            type(method_instance)
-                        ]
+                        method_instance_cls_path = (
+                            namespace_value_id_origin_paths[
+                                _namespace_value_id(type(method_instance))
+                            ]
+                        )
                     except KeyError:
                         pass
                     else:
                         value_dependencies.add(method_instance_cls_path)
             elif inspect.isfunction(value):
-                value_dependencies.add(value_origin_paths[builtins.dict])
-                value_dependencies.add(value_origin_paths[builtins.tuple])
+                value_dependencies.add(
+                    namespace_value_id_origin_paths[
+                        _namespace_value_id(builtins.dict)
+                    ]
+                )
+                value_dependencies.add(
+                    namespace_value_id_origin_paths[
+                        _namespace_value_id(builtins.tuple)
+                    ]
+                )
             elif isinstance(value, types.ClassMethodDescriptorType):
                 try:
                     object_class = value.__objclass__
                 except AttributeError:
                     assert isinstance(value, classmethod), value
                 else:
-                    value_dependencies.add(value_origin_paths[object_class])
+                    value_dependencies.add(
+                        namespace_value_id_origin_paths[
+                            _namespace_value_id(object_class)
+                        ]
+                    )
             else:
                 assert isinstance(value, _AnyDescriptorType), (
                     value,
                     value_path,
                 )
-                value_dependencies.add(value_origin_paths[value.__objclass__])
+                value_dependencies.add(
+                    namespace_value_id_origin_paths[
+                        _namespace_value_id(value.__objclass__)
+                    ]
+                )
 
 
 def _is_namespace_value(value: Any, /) -> TypeIs[_NamespaceValue]:
@@ -1562,13 +1796,15 @@ def _locate_module_origins(
     ],
     /,
     *,
-    module_origin_paths: MutableMapping[types.ModuleType, ObjectPath],
+    module_origin_id_paths: MutableMapping[_Id, ObjectPath],
     references: MutableMapping[ObjectPath, ObjectPath],
 ) -> None:
     for module, module_object_paths in module_with_name_and_local_paths:
         assert inspect.ismodule(module)
         origin_path = _to_module_origin_path(module, module_object_paths)
-        _set_absent_key(module_origin_paths, module, origin_path)
+        _set_absent_key(
+            module_origin_id_paths, _namespace_value_id(module), origin_path
+        )
         for candidate_path in module_object_paths:
             if candidate_path == origin_path:
                 continue
@@ -1662,13 +1898,18 @@ def _to_any_descriptor_origin_path(
         module_path for module_path, _ in candidate_paths
     ]
     object_class_member_module_paths: set[ModulePath] = set()
-    self_local_path = LocalObjectPath.from_object_name(descriptor.__qualname__)
+    self_local_path = LocalObjectPath.checked_from_object_name(
+        descriptor.__qualname__
+    )
     object_class = descriptor.__objclass__
     for object_class_member in vars(object_class).values():
         if inspect.isclass(object_class_member):
-            if not LocalObjectPath.from_object_name(
-                object_class_member.__qualname__
-            ).starts_with(self_local_path):
+            if (
+                self_local_path is not None
+                and not LocalObjectPath.from_object_name(
+                    object_class_member.__qualname__
+                ).starts_with(self_local_path)
+            ):
                 continue
             cls_module_name = object_class_member.__module__
             try:
@@ -1683,9 +1924,12 @@ def _to_any_descriptor_origin_path(
             )
         if not inspect.isfunction(object_class_member):
             continue
-        if not LocalObjectPath.from_object_name(
-            object_class_member.__qualname__
-        ).starts_with(self_local_path):
+        if (
+            self_local_path is not None
+            and not LocalObjectPath.from_object_name(
+                object_class_member.__qualname__
+            ).starts_with(self_local_path)
+        ):
             continue
         function_module_name = getattr(object_class_member, '__module__', None)
         if not isinstance(function_module_name, str):
@@ -1770,10 +2014,9 @@ def _to_cls_origin_path(
         module_path for module_path, _ in candidate_paths
     ]
     cls_member_module_paths: set[ModulePath] = set()
-    try:
-        self_local_path = LocalObjectPath.from_object_name(cls.__qualname__)
-    except ValueError:
-        self_local_path = None
+    self_local_path = LocalObjectPath.checked_from_object_name(
+        cls.__qualname__
+    )
     for cls_member in vars(cls).values():
         if inspect.isclass(cls_member):
             if (
@@ -1798,9 +2041,16 @@ def _to_cls_origin_path(
             continue
         if (
             self_local_path is not None
-            and not LocalObjectPath.from_object_name(
-                cls_member.__qualname__
-            ).starts_with(self_local_path)
+            and (
+                (
+                    cls_member_local_path
+                    := LocalObjectPath.checked_from_object_name(
+                        cls_member.__qualname__
+                    )
+                )
+                is not None
+            )
+            and not cls_member_local_path.starts_with(self_local_path)
         ):
             continue
         function_module_name = getattr(cls_member, '__module__', None)
@@ -1882,7 +2132,6 @@ def _to_function_origin_path(
         if self_module_name is not None
         else None
     )
-    self_local_path = LocalObjectPath.from_object_name(function.__qualname__)
     if (
         self_module_path is not None
         and len(
@@ -1897,6 +2146,7 @@ def _to_function_origin_path(
         > 0
     ):
         candidate_paths = self_module_path_candidate_paths
+    self_local_path = LocalObjectPath.from_object_name(function.__qualname__)
     if (
         len(
             self_local_path_candidate_paths := [
@@ -1981,8 +2231,10 @@ def _to_cls_origin_candidate_paths_based_on_module_ast(
             Sequence[AnyFunctionDefinitionAstNode | ast.ClassDef],
         ],
     ],
+    /,
 ) -> Sequence[ObjectPath]:
-    result: list[ObjectPath] = []
+    ast_paths: list[ObjectPath] = []
+    builtin_paths: list[ObjectPath] = []
     for value_path in value_paths:
         value_module_path, value_local_path = value_path
         value_module = located_values[value_module_path, LocalObjectPath()]
@@ -2030,8 +2282,10 @@ def _to_cls_origin_candidate_paths_based_on_module_ast(
                 if isinstance(node, ast.ClassDef)
             ]
             if len(value_nodes) > 0:
-                result.append(value_path)
-    return result
+                ast_paths.append(value_path)
+        else:
+            builtin_paths.append(value_path)
+    return ast_paths or builtin_paths
 
 
 def _to_any_descriptor_origin_candidate_paths_based_on_module_ast(
@@ -2147,29 +2401,11 @@ def _load_module_definition_nodes(
     return value_module_definition_nodes
 
 
-_AnyDescriptorType: TypeAlias = (
-    types.GetSetDescriptorType
-    | types.MemberDescriptorType
-    | types.MethodDescriptorType
-    | types.WrapperDescriptorType
-)
-_NamespaceValue: TypeAlias = (
-    _AnyDescriptorType
-    | types.BuiltinFunctionType
-    | types.BuiltinMethodType
-    | types.ClassMethodDescriptorType
-    | types.FunctionType
-    | types.MethodType
-    | types.ModuleType
-    | type[Any]
-)
-
-
 def _locate_objects(
     module_with_paths: Iterable[tuple[types.ModuleType, ObjectPath]],
     /,
     *,
-    all_value_paths: MutableMapping[Any, list[ObjectPath]],
+    namespace_value_id_paths: MutableMapping[Any, list[ObjectPath]],
     located_values: MutableMapping[ObjectPath, Any],
     all_value_dependencies: MutableMapping[ObjectPath, set[ObjectPath]],
 ) -> None:
@@ -2182,12 +2418,12 @@ def _locate_objects(
             value_path, set()
         )
         value_module_path, value_local_path = value_path
-        if (value_paths := all_value_paths.get(value)) is not None:
+        if (value_paths := namespace_value_id_paths.get(value)) is not None:
             value_paths.append(value_path)
             _set_absent_key(located_values, value_path, value)
             continue
         _set_absent_key(located_values, value_path, value)
-        _set_absent_key(all_value_paths, value, [value_path])
+        _set_absent_key(namespace_value_id_paths, value, [value_path])
         field_names = dir(value)
         try:
             value_dict = vars(value)

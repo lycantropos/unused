@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 import functools
-import abc
+
 from .context import Context
 from .enums import ObjectKind, ScopeKind
 from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
