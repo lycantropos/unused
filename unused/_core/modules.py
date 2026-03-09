@@ -39,7 +39,6 @@ from .object_ import (
 )
 from .object_path import (
     BUILTINS_MODULE_PATH,
-    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
@@ -1228,15 +1227,6 @@ def _parse_modules(
                     ],
                     *(
                         (
-                            result[BUILTINS_MODULE_PATH].get_nested_attribute(
-                                BUILTINS_OBJECT_LOCAL_OBJECT_PATH
-                            ),
-                        )
-                        if value is not builtins.object
-                        else ()
-                    ),
-                    *(
-                        (
                             Class(
                                 Scope(
                                     ScopeKind.UNKNOWN_CLASS,
@@ -1632,18 +1622,6 @@ def _collect_namespace_object_dependencies(
                 else:
                     value_dependencies.add(origin_base_cls_path)
                 origin_base_cls_paths.append(origin_base_cls_path)
-            if (
-                all(
-                    base_cls_path is None
-                    for base_cls_path in origin_base_cls_paths
-                )
-                and value is not builtins.object
-            ):
-                value_dependencies.add(
-                    namespace_value_id_origin_paths[
-                        _namespace_value_id(builtins.object)
-                    ]
-                )
             if not _is_metaclass(value) and value is not builtins.object:
                 metacls = type(value)
                 try:
