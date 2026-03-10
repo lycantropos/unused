@@ -435,7 +435,7 @@ def _locate_values(
     namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
     if inspect.isdatadescriptor(value):
-        if isinstance(value, property):
+        if isinstance(value, (types.DynamicClassAttribute, property)):
             for member in (value.fget, value.fdel, value.fset):
                 if member is None:
                     continue
@@ -449,11 +449,8 @@ def _locate_values(
                     namespace_value_id_values=namespace_value_id_values,
                 )
         if value_path is not None:
-            _set_absent_key(
-                located_namespace_values,
-                value_path,
-                value,  # type: ignore[misc]
-            )
+            assert _is_namespace_value(value)
+            _set_absent_key(located_namespace_values, value_path, value)
     elif value_path is not None:
         _set_absent_key(located_rest_values, value_path, value)
 
@@ -1043,6 +1040,7 @@ _NamespaceValue: TypeAlias = (
     | types.BuiltinFunctionType
     | types.BuiltinMethodType
     | types.ClassMethodDescriptorType
+    | types.DynamicClassAttribute
     | types.FunctionType
     | types.MethodType
     | types.ModuleType
@@ -1814,7 +1812,7 @@ def _is_namespace_value(value: Any, /) -> TypeIs[_NamespaceValue]:
             | types.ModuleType
             | type
         ),
-    )
+    ) or inspect.isdatadescriptor(value)
 
 
 def _locate_module_origins(
