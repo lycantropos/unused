@@ -7,7 +7,7 @@ import uuid
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
 from .modules import MODULES
-from .object_ import Call, Class, Object, PlainObject
+from .object_ import Call, Class, Instance, Object
 from .object_path import (
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
@@ -66,11 +66,10 @@ def _(
     ):
         return MODULES[scope.module_path].get_attribute(DICT_FIELD_NAME)
     if callable_object.kind is ObjectKind.CLASS:
-        return PlainObject(
-            ObjectKind.INSTANCE,
+        return Instance(
             callable_object.module_path,
             callable_object.local_path,
-            callable_object,
+            cls=callable_object,
         )
     if callable_object.kind is ObjectKind.METACLASS:
         local_path = scope.local_path.join('__' + uuid.uuid4().hex)

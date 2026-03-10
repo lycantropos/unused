@@ -193,91 +193,83 @@ def _search_local_path(
     return functools.reduce(builtins.getattr, local_path.components, module)
 
 
-BUILTINS_DICT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'dict'
-)
+BUILTINS_DICT_LOCAL_OBJECT_PATH: Final = LocalObjectPath('dict')
 assert (
     _search_local_path(BUILTINS_DICT_LOCAL_OBJECT_PATH, builtins)
     is builtins.dict
 )
-BUILTINS_FROZENSET_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'frozenset'
-)
+BUILTINS_FROZENSET_LOCAL_OBJECT_PATH: Final = LocalObjectPath('frozenset')
 assert (
     _search_local_path(BUILTINS_FROZENSET_LOCAL_OBJECT_PATH, builtins)
     is builtins.frozenset
 )
-BUILTINS_GLOBALS_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.globals.__qualname__)
+BUILTINS_GLOBALS_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.globals.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_GLOBALS_LOCAL_OBJECT_PATH, builtins)
     is builtins.globals
 )
-BUILTINS_LIST_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'list'
-)
+BUILTINS_LIST_LOCAL_OBJECT_PATH: Final = LocalObjectPath('list')
 assert (
     _search_local_path(BUILTINS_LIST_LOCAL_OBJECT_PATH, builtins)
     is builtins.list
 )
-BUILTINS_OBJECT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'object'
-)
+BUILTINS_OBJECT_LOCAL_OBJECT_PATH: Final = LocalObjectPath('object')
 assert (
     _search_local_path(BUILTINS_OBJECT_LOCAL_OBJECT_PATH, builtins)
     is builtins.object
 )
-BUILTINS_SET_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath('set')
+BUILTINS_SET_LOCAL_OBJECT_PATH: Final = LocalObjectPath('set')
 assert (
     _search_local_path(BUILTINS_SET_LOCAL_OBJECT_PATH, builtins)
     is builtins.set
 )
-BUILTINS_TUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'tuple'
-)
+BUILTINS_TUPLE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('tuple')
 assert (
     _search_local_path(BUILTINS_TUPLE_LOCAL_OBJECT_PATH, builtins)
     is builtins.tuple
 )
-BUILTINS_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.type.__qualname__)
+BUILTINS_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.type.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_TYPE_LOCAL_OBJECT_PATH, builtins)
     is builtins.type
 )
-COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
+COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH: Final = (
     LocalObjectPath.from_object_name(collections.namedtuple.__qualname__)
 )
 assert (
     _search_local_path(COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH, collections)
     is collections.namedtuple
 )
-SYS_MODULES_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'modules'
-)
+SYS_MODULES_LOCAL_OBJECT_PATH: Final = LocalObjectPath('modules')
 assert _search_local_path(SYS_MODULES_LOCAL_OBJECT_PATH, sys) is sys.modules
-TYPES_CODE_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'CodeType'
-)
+TYPES_CODE_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('CodeType')
 assert (
     _search_local_path(TYPES_CODE_TYPE_LOCAL_OBJECT_PATH, types)
     is types.CodeType
 )
-TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath('FunctionType')
-)
+TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('FunctionType')
 assert (
     _search_local_path(TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH, types)
     is types.FunctionType
 )
-TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
-    'MethodType'
-)
+TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('MethodType')
 assert (
     _search_local_path(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH, types)
     is types.MethodType
+)
+TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('ModuleType')
+assert (
+    _search_local_path(TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH, types)
+    is types.ModuleType
+)
+TYPES_NONE_TYPE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('NoneType')
+assert (
+    _search_local_path(TYPES_NONE_TYPE_LOCAL_OBJECT_PATH, types)
+    is types.NoneType
 )
 FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: Final = '__defaults__'
 assert types.FunctionType.__defaults__ is getattr(

@@ -18,22 +18,24 @@ from collections.abc import (
     Sequence,
 )
 from functools import partial, reduce, singledispatch, singledispatchmethod
-from importlib.machinery import EXTENSION_SUFFIXES
+from importlib.machinery import BuiltinImporter, EXTENSION_SUFFIXES
 from pathlib import Path
-from typing import Any, ClassVar, Final, NewType, TypeAlias, TypeVar
+from typing import Any, ClassVar, Final, NewType, TypeAlias, TypeGuard, TypeVar
 
 from typing_extensions import TypeIs, override
 
-from .enums import ObjectKind, ScopeKind
+from .enums import ScopeKind
+from .file_system import load_module_file_paths
 from .missing import MISSING
 from .object_ import (
     CALLABLE_OBJECT_CLASSES,
     Class,
+    Descriptor,
+    Instance,
     Method,
     Module,
     MutableObject,
     Object,
-    PlainObject,
     Routine,
     UnknownObject,
 )
@@ -43,10 +45,10 @@ from .object_path import (
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
-    NAME_FIELD_NAME,
     SYS_MODULE_PATH,
     TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH,
     TYPES_MODULE_PATH,
+    TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH,
     TYPING_MODULE_PATH,
 )
 from .resolution import (
@@ -418,35 +420,41 @@ class DefinitionAstNodeParser(ast.NodeVisitor):
         self._definition_nodes.setdefault(function_local_path, []).append(node)
 
 
-def _invert_mapping(
-    value: Mapping[_KT, _VT], /
-) -> Mapping[_VT, Sequence[_KT]]:
-    result: dict[_VT, list[_KT]] = {}
-    for item_key, item_value in value.items():
-        result.setdefault(item_value, []).append(item_key)
-    return result
-
-
-MODULE_NAMES: Final[Mapping[types.ModuleType, Sequence[str]]] = (
-    _invert_mapping(sys.modules)
-)
-
-
 @singledispatch
 def _locate_values(
     value: Any,
     value_path: ObjectPath | None,
-    mentioned_module_paths: MutableMapping[  # noqa: ARG001
+    mentioned_module_paths: MutableMapping[
         types.ModuleType, dict[ObjectPath, None]
     ],
     /,
     *,
-    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],  # noqa: ARG001
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
     located_rest_values: MutableMapping[ObjectPath, _NamespaceValue],
-    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],  # noqa: ARG001
-    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],  # noqa: ARG001
+    namespace_value_id_paths: MutableMapping[_Id, list[ObjectPath]],
+    namespace_value_id_values: MutableMapping[_Id, _NamespaceValue],
 ) -> None:
-    if value_path is not None:
+    if inspect.isdatadescriptor(value):
+        if isinstance(value, property):
+            for member in (value.fget, value.fdel, value.fset):
+                if member is None:
+                    continue
+                _locate_values(
+                    member,
+                    None,
+                    mentioned_module_paths,
+                    located_namespace_values=located_namespace_values,
+                    located_rest_values=located_rest_values,
+                    namespace_value_id_paths=namespace_value_id_paths,
+                    namespace_value_id_values=namespace_value_id_values,
+                )
+        if value_path is not None:
+            _set_absent_key(
+                located_namespace_values,
+                value_path,
+                value,  # type: ignore[misc]
+            )
+    elif value_path is not None:
         _set_absent_key(located_rest_values, value_path, value)
 
 
@@ -580,12 +588,12 @@ def _(
             namespace_value_id_paths=namespace_value_id_paths,
             namespace_value_id_values=namespace_value_id_values,
         )
-        for module_name in MODULE_NAMES.get(value, []):
-            module_path = ModulePath.from_module_name(module_name)
+        for module_object_path in _module_to_module_paths(value):
+            module_path, _ = module_object_path
             if value_module_path is None or module_path != value_module_path:
                 _locate_values(
                     value,
-                    (module_path, LocalObjectPath()),
+                    module_object_path,
                     mentioned_module_paths,
                     located_namespace_values=located_namespace_values,
                     located_rest_values=located_rest_values,
@@ -609,11 +617,9 @@ def _(
                 namespace_value_id_paths=namespace_value_id_paths,
                 namespace_value_id_values=namespace_value_id_values,
             )
-    for module_name in MODULE_NAMES.get(value, []):
+    for module_object_path in _module_to_module_paths(value):
         _register_module_path(
-            mentioned_module_paths,
-            value,
-            (ModulePath.from_module_name(module_name), LocalObjectPath()),
+            mentioned_module_paths, value, module_object_path
         )
     if value_path is None:
         return
@@ -1043,6 +1049,22 @@ _NamespaceValue: TypeAlias = (
     | type[Any]
 )
 _Id = NewType('_Id', int)
+_KT = TypeVar('_KT')
+_VT = TypeVar('_VT')
+
+
+def _invert_mapping(
+    value: Mapping[_KT, _VT], /
+) -> Mapping[_VT, Sequence[_KT]]:
+    result: dict[_VT, list[_KT]] = {}
+    for item_key, item_value in value.items():
+        result.setdefault(item_value, []).append(item_key)
+    return result
+
+
+_MODULE_NAMES: Final[Mapping[types.ModuleType, Sequence[str]]] = (
+    _invert_mapping(sys.modules)
+)
 
 
 def _parse_modules(
@@ -1055,9 +1077,9 @@ def _parse_modules(
     located_rest_values: dict[ObjectPath, Any] = {}
     for module in modules:
         module_name = module.__name__
-        assert module_name in MODULE_NAMES[module], (
+        assert module_name in _MODULE_NAMES[module], (
             module_name,
-            MODULE_NAMES[module],
+            _MODULE_NAMES[module],
         )
         _locate_values(
             module,
@@ -1161,13 +1183,14 @@ def _parse_modules(
         except KeyError:
             value = located_rest_values[value_path]
             if (
-                maybe_instance_cls_path := instance_cls_paths.get(value_path)
+                instance_cls_path := instance_cls_paths.get(value_path)
             ) is not None:
-                value_object = PlainObject(
-                    ObjectKind.INSTANCE,
+                value_object = Instance(
                     value_module_path,
                     value_local_path,
-                    _path_to_object(result, maybe_instance_cls_path),
+                    cls=ensure_type(
+                        _path_to_object(result, instance_cls_path), Class
+                    ),
                 )
             else:
                 value_object = UnknownObject(
@@ -1188,14 +1211,6 @@ def _parse_modules(
                     result[value_module_path].set_nested_attribute(
                         value_local_path, value_object
                     )
-                value_object.set_attribute(
-                    NAME_FIELD_NAME,
-                    UnknownObject(
-                        value_module_path,
-                        value_local_path.join(NAME_FIELD_NAME),
-                    ),
-                )
-                value_object.set_value(NAME_FIELD_NAME, value.__name__)
                 continue
             if inspect.isclass(value):
                 origin_base_cls_paths = base_cls_paths[value_path]
@@ -1252,11 +1267,6 @@ def _parse_modules(
                         else MISSING
                     ),
                 )
-                value_object.set_attribute(
-                    NAME_FIELD_NAME,
-                    UnknownObject(value_module_path, value_local_path),
-                )
-                value_object.set_value(NAME_FIELD_NAME, value.__name__)
             elif (
                 origin_method_component_paths := method_component_paths.get(
                     value_path
@@ -1309,26 +1319,28 @@ def _parse_modules(
                         _path_to_object(result, instance_cls_path),
                         (Class, UnknownObject),
                     )
-                value_object = Routine(
-                    value_module_path,
-                    value_local_path,
-                    value_base_cls,
-                    ast_node=value_ast_node,
-                )
                 if inspect.isfunction(value):
+                    value_object = Routine(
+                        value_module_path,
+                        value_local_path,
+                        value_base_cls,
+                        ast_node=value_ast_node,
+                    )
                     value_object.set_attribute(
                         FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
-                        PlainObject(
-                            ObjectKind.INSTANCE,
+                        Instance(
                             value_module_path,
                             value_local_path.join(
                                 FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
                             ),
-                            _path_to_object(
-                                result,
-                                namespace_value_id_origin_paths[
-                                    _namespace_value_id(builtins.tuple)
-                                ],
+                            cls=ensure_type(
+                                _path_to_object(
+                                    result,
+                                    namespace_value_id_origin_paths[
+                                        _namespace_value_id(builtins.tuple)
+                                    ],
+                                ),
+                                Class,
                             ),
                         ),
                     )
@@ -1338,17 +1350,19 @@ def _parse_modules(
                     )
                     value_object.set_attribute(
                         FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-                        PlainObject(
-                            ObjectKind.INSTANCE,
+                        Instance(
                             value_module_path,
                             value_local_path.join(
                                 FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
                             ),
-                            _path_to_object(
-                                result,
-                                namespace_value_id_origin_paths[
-                                    _namespace_value_id(builtins.dict)
-                                ],
+                            cls=ensure_type(
+                                _path_to_object(
+                                    result,
+                                    namespace_value_id_origin_paths[
+                                        _namespace_value_id(builtins.dict)
+                                    ],
+                                ),
+                                Class,
                             ),
                         ),
                     )
@@ -1358,17 +1372,49 @@ def _parse_modules(
                     )
                     value_object.set_attribute(
                         '__code__',
-                        PlainObject(
-                            ObjectKind.INSTANCE,
+                        Instance(
                             value_module_path,
                             value_local_path.join('__code__'),
-                            _path_to_object(
-                                result,
-                                namespace_value_id_origin_paths[
-                                    _namespace_value_id(types.CodeType)
-                                ],
+                            cls=ensure_type(
+                                _path_to_object(
+                                    result,
+                                    namespace_value_id_origin_paths[
+                                        _namespace_value_id(types.CodeType)
+                                    ],
+                                ),
+                                Class,
                             ),
                         ),
+                    )
+                elif isinstance(
+                    value,
+                    (
+                        types.BuiltinFunctionType
+                        | types.BuiltinMethodType
+                        | types.MethodDescriptorType
+                        | types.WrapperDescriptorType
+                    ),
+                ):
+                    value_object = Routine(
+                        value_module_path,
+                        value_local_path,
+                        value_base_cls,
+                        ast_node=value_ast_node,
+                    )
+                else:
+                    assert isinstance(
+                        value,
+                        (
+                            types.ClassMethodDescriptorType
+                            | types.GetSetDescriptorType
+                            | types.MemberDescriptorType
+                        ),
+                    ), value_path
+                    value_object = Descriptor(
+                        value_module_path,
+                        value_local_path,
+                        value_base_cls,
+                        ast_node=value_ast_node,
                     )
         value_module_object = result[value_module_path]
         value_module_object.set_nested_attribute(
@@ -1677,23 +1723,26 @@ def _collect_namespace_object_dependencies(
                         value_dependencies.add(method_instance_path)
                 else:
                     assert not inspect.ismodule(method_instance)
-                    method_instance_path = None
-                method_callable = value.__func__
-                if _is_namespace_value(method_callable):
-                    method_callable_path = namespace_value_id_origin_paths[
-                        _namespace_value_id(method_callable)
-                    ]
-                    value_dependencies.add(method_callable_path)
-                else:
-                    method_callable_path = None
-                if (
-                    method_callable_path is not None
-                    and method_instance_path is not None
-                ):
-                    method_component_paths[value_path] = (
-                        method_callable_path,
-                        method_instance_path,
+                    method_instance_path = (
+                        value_module_path,
+                        value_local_path.join('__self__'),
                     )
+                method_callable = value.__func__
+                try:
+                    method_callable_path = namespace_value_id_origin_paths[
+                        _namespace_value_id(method_callable)  # type: ignore[arg-type]
+                    ]
+                except KeyError:
+                    method_callable_path = (
+                        value_module_path,
+                        value_local_path.join('__func__'),
+                    )
+                else:
+                    value_dependencies.add(method_callable_path)
+                method_component_paths[value_path] = (
+                    method_callable_path,
+                    method_instance_path,
+                )
             elif inspect.isbuiltin(value):
                 method_instance = value.__self__
                 if inspect.isclass(method_instance) or inspect.ismodule(
@@ -1833,7 +1882,7 @@ def _to_module_origin_path(
             (module_path, local_path)
             for module_path, local_path in candidate_paths
             if (
-                '.'.join([*module_path.components, *local_path.components])
+                _object_path_to_full_name(module_path, local_path)
                 == module.__name__
             )
         ]
@@ -1843,6 +1892,12 @@ def _to_module_origin_path(
             assert len(module_name_candidates) == 0
             origin_path = candidate_paths[0]
     return origin_path
+
+
+def _object_path_to_full_name(
+    module_path: ModulePath, local_path: LocalObjectPath, /
+) -> str:
+    return '.'.join([*module_path.components, *local_path.components])
 
 
 def _to_any_descriptor_origin_path(
@@ -2463,17 +2518,6 @@ def _call_or_else(
         return default
 
 
-_KT = TypeVar('_KT')
-_VT = TypeVar('_VT')
-
-
-def _set_absent_key(
-    mapping: MutableMapping[_KT, _VT], key: _KT, value: _VT, /
-) -> None:
-    assert key not in mapping, (mapping[key], value)
-    mapping[key] = value
-
-
 def _add_reference(
     references: MutableMapping[ObjectPath, ObjectPath],
     referent_path: ObjectPath,
@@ -2482,6 +2526,30 @@ def _add_reference(
 ) -> None:
     assert referent_path != reference_path, referent_path
     _set_absent_key(references, referent_path, reference_path)
+
+
+def _module_to_module_paths(
+    module: types.ModuleType, /
+) -> Iterable[ObjectPath]:
+    for module_name in _MODULE_NAMES.get(module, []):
+        candidate = ModulePath.from_module_name(module_name)
+        if (
+            MODULE_FILE_SYSTEM_PATHS.get(candidate) is None
+            and module.__loader__ is not BuiltinImporter
+            and (
+                (module_file_path_string := getattr(module, '__file__', None))
+                is not None
+            )
+        ):
+            module_file_path = Path(module_file_path_string).resolve(
+                strict=True
+            )
+            for resolved_module_path in FILE_PATH_MODULE_PATHS[
+                module_file_path
+            ]:
+                yield resolved_module_path, LocalObjectPath()
+        else:
+            yield candidate, LocalObjectPath()
 
 
 def _path_to_object(
@@ -2501,6 +2569,34 @@ def _path_to_object_or_unknown(
         return UnknownObject(module_path, local_path)
 
 
+def _set_absent_key(
+    mapping: MutableMapping[_KT, _VT], key: _KT, value: _VT, /
+) -> None:
+    assert key not in mapping, (mapping[key], value)
+    mapping[key] = value
+
+
+MODULE_FILE_SYSTEM_PATHS: Final[Mapping[ModulePath, Path | None]] = (
+    load_module_file_paths()
+)
+
+
+def _drop_none_key(mapping: Mapping[_KT | None, _VT], /) -> Mapping[_KT, _VT]:
+    result = dict(mapping)
+    result.pop(None, None)
+    assert _has_no_none_key(result)
+    return result
+
+
+def _has_no_none_key(
+    mapping: Mapping[_KT | None, _VT], /
+) -> TypeGuard[Mapping[_KT, _VT]]:
+    return None not in mapping
+
+
+FILE_PATH_MODULE_PATHS: Final[Mapping[Path, Sequence[ModulePath]]] = (
+    _drop_none_key(_invert_mapping(MODULE_FILE_SYSTEM_PATHS))
+)
 MODULES: Final[MutableMapping[ModulePath, MutableObject]] = _parse_modules(
     builtins, sys, types
 )
@@ -2510,6 +2606,10 @@ BUILTINS_MODULE: Final[Module] = ensure_type(
 TYPES_MODULE: Final[Object] = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
 Method.BASE_CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH),
+    Class,
+)
+Module.BASE_CLS = ensure_type(
+    TYPES_MODULE.get_nested_attribute(TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH),
     Class,
 )
 

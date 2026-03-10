@@ -24,10 +24,11 @@ from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
 from .object_ import (
     CLASS_SCOPE_KINDS,
     Class,
+    Descriptor,
+    Instance,
     Module,
     MutableObject,
     Object,
-    PlainObject,
     Routine,
     UnknownObject,
 )
@@ -43,6 +44,7 @@ from .object_path import (
     ModulePath,
     TYPES_CODE_TYPE_LOCAL_OBJECT_PATH,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
+    TYPES_NONE_TYPE_LOCAL_OBJECT_PATH,
 )
 from .resolution import (
     ResolvedAssignmentTarget,
@@ -201,14 +203,16 @@ def _does_function_modify_caller_global_state(
             )
             function_scope.set_object(
                 variadic_positional_parameter_name,
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     function_object.module_path,
                     function_object.local_path.join(
                         variadic_positional_parameter_name
                     ),
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+                    cls=ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                 ),
             )
@@ -224,14 +228,16 @@ def _does_function_modify_caller_global_state(
             )
             function_scope.set_object(
                 variadic_keyword_parameter_name,
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     function_object.module_path,
                     function_object.local_path.join(
                         variadic_keyword_parameter_name
                     ),
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_DICT_LOCAL_OBJECT_PATH
+                    cls=ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_DICT_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                 ),
             )
@@ -258,6 +264,17 @@ def _does_function_modify_caller_global_state(
 
 class Starred(enum.Enum):
     UNKNOWN = enum.auto()
+
+
+def _is_package_module_path(
+    module_path: ModulePath,
+    /,
+    *,
+    module_file_paths: Mapping[ModulePath, Path | None],
+) -> bool:
+    return (
+        module_file_path := module_file_paths.get(module_path)
+    ) is not None and module_file_path.name.startswith('__init__.')
 
 
 class ScopeParser(ast.NodeVisitor):
@@ -335,15 +352,9 @@ class ScopeParser(ast.NodeVisitor):
         callable_object = self._lookup_object_by_expression_node(node.func)
         if callable_object is None:
             return
-        if (
-            callable_object.kind is ObjectKind.ROUTINE
-            and callable_object.module_path == BUILTINS_MODULE_PATH
-            and (
-                callable_object.local_path
-                == LocalObjectPath.from_object_name(
-                    builtins.__import__.__qualname__
-                )
-            )
+        if callable_object.module_path == BUILTINS_MODULE_PATH and (
+            callable_object.local_path
+            == LocalObjectPath.from_object_name('__import__')
         ):
             try:
                 module_name = self._evaluate_expression_node(node.args[0])
@@ -368,7 +379,8 @@ class ScopeParser(ast.NodeVisitor):
         if callable_object.kind in (ObjectKind.METHOD, ObjectKind.ROUTINE):
             function_object = _to_plain_routine_object(callable_object)
             if (
-                _does_function_modify_caller_global_state(
+                (self._get_module_scope().kind is ScopeKind.STATIC_MODULE)
+                and _does_function_modify_caller_global_state(
                     function_object,
                     *(
                         self._get_inherited_scopes()
@@ -399,8 +411,10 @@ class ScopeParser(ast.NodeVisitor):
                         node.args, callable_object
                     ),
                 )
-                and (module_scope := self._get_module_scope()).kind
-                is ScopeKind.STATIC_MODULE
+                and (
+                    (module_scope := self._get_module_scope()).kind
+                    is ScopeKind.STATIC_MODULE
+                )
             ):
                 module_scope.mark_module_as_dynamic()
                 return
@@ -483,23 +497,27 @@ class ScopeParser(ast.NodeVisitor):
         )
         cls_object.set_attribute(
             DICT_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 cls_module_path,
                 cls_local_path.join(DICT_FIELD_NAME),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_DICT_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_DICT_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
         cls_object.set_attribute(
             MODULE_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 cls_module_path,
                 cls_local_path.join(MODULE_FIELD_NAME),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_STR_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
@@ -508,24 +526,28 @@ class ScopeParser(ast.NodeVisitor):
         )
         cls_object.set_attribute(
             NAME_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 cls_module_path,
                 cls_local_path.join(NAME_FIELD_NAME),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_STR_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
         cls_object.set_value(NAME_FIELD_NAME, cls_name)
         cls_object.set_attribute(
             QUALNAME_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 cls_module_path,
                 cls_local_path.join(QUALNAME_FIELD_NAME),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_STR_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
@@ -543,40 +565,44 @@ class ScopeParser(ast.NodeVisitor):
                 ObjectKind.ROUTINE,
             ):
                 function_object = _to_plain_routine_object(decorator_object)
-                if _does_function_modify_caller_global_state(
-                    function_object,
-                    *(
-                        self._get_inherited_scopes()
-                        if (
-                            function_object.module_path
-                            == self._scope.module_path
-                            and (
-                                function_object.local_path.parent
-                                == self._scope.local_path
+                if (
+                    self._get_module_scope().kind is ScopeKind.STATIC_MODULE
+                    and _does_function_modify_caller_global_state(
+                        function_object,
+                        *(
+                            self._get_inherited_scopes()
+                            if (
+                                function_object.module_path
+                                == self._scope.module_path
+                                and (
+                                    function_object.local_path.parent
+                                    == self._scope.local_path
+                                )
                             )
-                        )
-                        else (
-                            ensure_type(
-                                self._resolve_absolute_module_path(
-                                    function_object.module_path
-                                ),
-                                Module,
-                            ).to_scope(),
-                            BUILTINS_MODULE.to_scope(),
-                        )
-                    ),
-                    caller_module_scope=self._get_module_scope(),
-                    keyword_arguments={},
-                    module_file_paths=self._module_file_paths,
-                    positional_arguments=[
-                        *self._to_complete_positional_arguments(
-                            [], decorator_object
+                            else (
+                                ensure_type(
+                                    self._resolve_absolute_module_path(
+                                        function_object.module_path
+                                    ),
+                                    Module,
+                                ).to_scope(),
+                                BUILTINS_MODULE.to_scope(),
+                            )
                         ),
-                        cls_scope.as_object(),
-                    ],
-                ) and (
-                    (module_scope := self._get_module_scope()).kind
-                    is ScopeKind.STATIC_MODULE
+                        caller_module_scope=self._get_module_scope(),
+                        keyword_arguments={},
+                        module_file_paths=self._module_file_paths,
+                        positional_arguments=[
+                            *self._to_complete_positional_arguments(
+                                [], decorator_object
+                            ),
+                            cls_scope.as_object(),
+                        ],
+                    )
+                    and (
+                        (module_scope := self._get_module_scope()).kind
+                        is ScopeKind.STATIC_MODULE
+                    )
                 ):
                     module_scope.mark_module_as_dynamic()
                     continue
@@ -692,11 +718,10 @@ class ScopeParser(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         import_is_relative = node.level > 0
         if import_is_relative:
-            is_package = (
-                module_file_path := self._module_file_paths.get(
-                    self._scope.module_path
-                )
-            ) is not None and module_file_path.stem == '__init__'
+            is_package = _is_package_module_path(
+                self._scope.module_path,
+                module_file_paths=self._module_file_paths,
+            )
             depth = (
                 len(self._scope.module_path.components)
                 + is_package
@@ -853,11 +878,13 @@ class ScopeParser(ast.NodeVisitor):
                         assert exception_cls_object is not None
                         self._scope.set_object(
                             exception_name,
-                            PlainObject(
-                                ObjectKind.INSTANCE,
+                            Instance(
                                 self._scope.module_path,
                                 self._scope.local_path.join(exception_name),
-                                exception_cls_object,
+                                cls=ensure_type(
+                                    exception_cls_object,
+                                    (Class, UnknownObject),
+                                ),
                             ),
                         )
                     for handler_node in handler.body:
@@ -1197,24 +1224,37 @@ class ScopeParser(ast.NodeVisitor):
                 decorator_object.local_path
                 == BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
             ):
-                function_object = PlainObject(
-                    ObjectKind.PROPERTY,
+                assert decorator_object.kind is ObjectKind.CLASS, (
+                    decorator_object
+                )
+                function_object = Descriptor(
                     self._scope.module_path,
                     function_local_path,
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
+                    ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
+                    ast_node=node,
                 )
                 break
-            if decorator_object.module_path == BUILTINS_MODULE_PATH and (
-                decorator_object.local_path
-                in (
-                    LocalObjectPath.from_object_name(
-                        property.deleter.__qualname__
-                    ),
-                    LocalObjectPath.from_object_name(
-                        property.setter.__qualname__
-                    ),
+            if (
+                decorator_object.kind is ObjectKind.METHOD
+                and (
+                    decorator_object.routine.module_path
+                    == BUILTINS_MODULE_PATH
+                )
+                and (
+                    decorator_object.routine.local_path
+                    in (
+                        LocalObjectPath.from_object_name(
+                            property.deleter.__qualname__
+                        ),
+                        LocalObjectPath.from_object_name(
+                            property.setter.__qualname__
+                        ),
+                    )
                 )
             ):
                 return
@@ -1240,8 +1280,10 @@ class ScopeParser(ast.NodeVisitor):
                 break
             if (
                 decorator_object.kind is ObjectKind.ROUTINE_CALL
-                and decorator_object.callable_.module_path
-                == FUNCTOOLS_MODULE_PATH
+                and (
+                    decorator_object.callable_.module_path
+                    == FUNCTOOLS_MODULE_PATH
+                )
                 and (
                     decorator_object.callable_.local_path.starts_with(
                         FUNCTOOLS_SINGLEDISPATCH_LOCAL_OBJECT_PATH
@@ -1250,11 +1292,10 @@ class ScopeParser(ast.NodeVisitor):
             ):
                 return
             if decorator_object.kind is ObjectKind.CLASS:
-                function_object = PlainObject(
-                    ObjectKind.INSTANCE,
+                function_object = Instance(
                     self._scope.module_path,
                     function_local_path,
-                    decorator_object,
+                    cls=decorator_object,
                 )
                 if decorator_object.module_path == BUILTINS_MODULE_PATH and (
                     decorator_object.local_path
@@ -1289,11 +1330,10 @@ class ScopeParser(ast.NodeVisitor):
             )
             function_object.set_attribute(
                 '__code__',
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     self._scope.module_path,
                     function_local_path.join('__code__'),
-                    ensure_type(
+                    cls=ensure_type(
                         TYPES_MODULE.get_nested_attribute(
                             TYPES_CODE_TYPE_LOCAL_OBJECT_PATH
                         ),
@@ -1332,16 +1372,16 @@ class ScopeParser(ast.NodeVisitor):
             )
         function_object.set_attribute(
             FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 function_object.module_path,
                 function_object.local_path.join(
                     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
                 ),
-                BUILTINS_MODULE.get_nested_attribute(
-                    LocalObjectPath.from_object_name(
-                        builtins.tuple.__qualname__
-                    )
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
@@ -1350,16 +1390,16 @@ class ScopeParser(ast.NodeVisitor):
         )
         function_object.set_attribute(
             FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 function_object.module_path,
                 function_object.local_path.join(
                     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
                 ),
-                BUILTINS_MODULE.get_nested_attribute(
-                    LocalObjectPath.from_object_name(
-                        builtins.dict.__qualname__
-                    )
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_DICT_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
@@ -1390,9 +1430,9 @@ def resolve_module_path(
         root_module_path, module_file_paths=module_file_paths
     )
     for component in rest_components:
+        submodule_path = result.module_path.join(component)
         try:
-            submodule_path = result.module_path.join(component)
-            result = _load_module_by_path(
+            next_result = _load_module_by_path(
                 submodule_path, module_file_paths=module_file_paths
             )
         except ModuleNotFoundError as error:
@@ -1400,6 +1440,12 @@ def resolve_module_path(
                 result = result.get_mutable_attribute(component)
             except KeyError:
                 raise error from None
+        else:
+            assert _is_package_module_path(
+                result.module_path, module_file_paths=module_file_paths
+            ), module_path
+            result.set_attribute(component, next_result)
+            result = next_result
     return result
 
 
@@ -1452,56 +1498,74 @@ def _load_module_by_path(
         result = MODULES[module_path] = Module(module_scope)
         result.set_attribute(
             '__file__',
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 module_path,
                 LocalObjectPath('__file__'),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_STR_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
             ),
         )
         result.set_value('__file__', str(module_file_path))
         module_docstring = ast.get_docstring(module_node)
         if module_docstring is not None:
+            assert isinstance(module_docstring, str), module_docstring
             result.set_attribute(
                 '__doc__',
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     module_path,
                     LocalObjectPath('__doc__'),
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    cls=ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_STR_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                 ),
             )
         else:
             result.set_attribute(
                 '__doc__',
-                UnknownObject(module_path, LocalObjectPath('__doc__')),
+                Instance(
+                    module_path,
+                    LocalObjectPath('__doc__'),
+                    cls=ensure_type(
+                        TYPES_MODULE.get_nested_attribute(
+                            TYPES_NONE_TYPE_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
+                    ),
+                ),
             )
         result.set_value('__doc__', module_docstring)
         if module_file_path.name.startswith('__init__.'):
             result.set_attribute(
                 '__package__',
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     module_path,
                     LocalObjectPath('__package__'),
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_STR_LOCAL_OBJECT_PATH
+                    cls=ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_STR_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                 ),
             )
             result.set_value('__package__', module_path.to_module_name())
             result.set_attribute(
                 '__path__',
-                PlainObject(
-                    ObjectKind.INSTANCE,
+                Instance(
                     module_path,
                     LocalObjectPath('__path__'),
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_LIST_LOCAL_OBJECT_PATH
+                    cls=ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_LIST_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     ),
                 ),
             )
@@ -1509,19 +1573,15 @@ def _load_module_by_path(
         assert isinstance(result, Module), result
         result.set_attribute(
             DICT_FIELD_NAME,
-            PlainObject(
-                ObjectKind.INSTANCE,
+            Instance(
                 result.module_path,
                 result.local_path.join(DICT_FIELD_NAME),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_DICT_LOCAL_OBJECT_PATH
+                cls=ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_DICT_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
-            ),
-        )
-        result.set_attribute(
-            '__class__',
-            TYPES_MODULE.get_nested_attribute(
-                TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH
             ),
         )
         result.set_attribute(

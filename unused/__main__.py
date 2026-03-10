@@ -184,10 +184,12 @@ def main() -> None:
     stderr, stdout = sys.stderr, sys.stdout
     for module_file_path in chain.from_iterable(
         (
-            chain(*[
-                path.rglob('*' + suffix)
-                for suffix in MODULE_FILE_PATH_SUFFIXES
-            ])
+            chain(
+                *[
+                    path.rglob('*' + suffix)
+                    for suffix in MODULE_FILE_PATH_SUFFIXES
+                ]
+            )
             if path.is_dir()
             else [path]
         )

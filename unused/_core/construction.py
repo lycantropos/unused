@@ -10,10 +10,15 @@ from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .missing import MISSING
 from .modules import BUILTINS_MODULE, MODULES
-from .object_ import Call, Class, Object, PlainObject, UnknownObject
+from .object_ import Call, Class, Instance, Object, UnknownObject
 from .object_path import (
+    BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
+    BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
+    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
+    BUILTINS_SET_LOCAL_OBJECT_PATH,
+    BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     COLLECTIONS_MODULE_PATH,
     COLLECTIONS_NAMEDTUPLE_LOCAL_OBJECT_PATH,
@@ -22,6 +27,7 @@ from .object_path import (
     ModulePath,
 )
 from .scope import Scope
+from .utils import ensure_type
 
 
 @functools.singledispatch
@@ -115,17 +121,13 @@ def _(
                     local_path,
                 ),
                 BUILTINS_MODULE.get_nested_attribute(
-                    LocalObjectPath.from_object_name(
-                        builtins.object.__qualname__
-                    )
+                    BUILTINS_OBJECT_LOCAL_OBJECT_PATH
                 ),
                 metaclass=MISSING,
             )
         )
     if callable_object.kind is ObjectKind.CLASS:
-        return PlainObject(
-            ObjectKind.INSTANCE, module_path, local_path, callable_object
-        )
+        return Instance(module_path, local_path, cls=callable_object)
     if callable_object.kind is ObjectKind.METACLASS:
         return Class(
             Scope(ScopeKind.CLASS, module_path, local_path),
@@ -177,10 +179,10 @@ def _(
         named_tuple_object = Class(
             Scope(ScopeKind.CLASS, module_path, local_path),
             BUILTINS_MODULE.get_nested_attribute(
-                LocalObjectPath.from_object_name(tuple.__qualname__)
+                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
             ),
             BUILTINS_MODULE.get_nested_attribute(
-                LocalObjectPath.from_object_name(object.__qualname__)
+                BUILTINS_OBJECT_LOCAL_OBJECT_PATH
             ),
             metaclass=MISSING,
         )
@@ -247,12 +249,14 @@ def _(
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return PlainObject(
-        ObjectKind.INSTANCE,
+    return Instance(
         module_path,
         local_path,
-        BUILTINS_MODULE.get_nested_attribute(
-            LocalObjectPath.from_object_name(dict.__qualname__)
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_DICT_LOCAL_OBJECT_PATH
+            ),
+            Class,
         ),
     )
 
@@ -268,12 +272,14 @@ def _(
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return PlainObject(
-        ObjectKind.INSTANCE,
+    return Instance(
         module_path,
         local_path,
-        BUILTINS_MODULE.get_nested_attribute(
-            LocalObjectPath.from_object_name(list.__qualname__)
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_LIST_LOCAL_OBJECT_PATH
+            ),
+            Class,
         ),
     )
 
@@ -324,12 +330,14 @@ def _(
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return PlainObject(
-        ObjectKind.INSTANCE,
+    return Instance(
         module_path,
         local_path,
-        BUILTINS_MODULE.get_nested_attribute(
-            LocalObjectPath.from_object_name(set.__qualname__)
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_SET_LOCAL_OBJECT_PATH
+            ),
+            Class,
         ),
     )
 
@@ -344,11 +352,13 @@ def _(
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return PlainObject(
-        ObjectKind.INSTANCE,
+    return Instance(
         module_path,
         local_path,
-        BUILTINS_MODULE.get_nested_attribute(
-            LocalObjectPath.from_object_name(tuple.__qualname__)
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+            ),
+            Class,
         ),
     )

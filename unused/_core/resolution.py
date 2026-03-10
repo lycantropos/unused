@@ -228,8 +228,7 @@ def _(
                 LocalObjectPath(),
             )
     if not (
-        value_object.kind is ObjectKind.INSTANCE
-        and value_object.module_path == scope.module_path
+        value_object.module_path == scope.module_path
         and value_object.local_path == LocalObjectPath(DICT_FIELD_NAME)
     ):
         return None

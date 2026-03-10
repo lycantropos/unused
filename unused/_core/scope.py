@@ -69,14 +69,14 @@ class Scope:
         )
 
     def get_object(self, name: str, /) -> Object:
-        for included_object in self._included_objects:
-            try:
-                return included_object.get_attribute(name)
-            except KeyError:
-                continue
         try:
             return self._objects[name]
         except KeyError:
+            for included_object in self._included_objects:
+                try:
+                    return included_object.get_attribute(name)
+                except KeyError:
+                    continue
             if self.kind in (
                 ScopeKind.BUILTIN_MODULE,
                 ScopeKind.DYNAMIC_MODULE,
@@ -92,12 +92,15 @@ class Scope:
 
     def get_value(self, name: str, /) -> Any:
         assert isinstance(name, str), name
-        for included_object in self._included_objects:
-            try:
-                return included_object.get_value(name)
-            except KeyError:
-                continue
-        return self._values[name]
+        try:
+            return self._values[name]
+        except KeyError:
+            for included_object in self._included_objects:
+                try:
+                    return included_object.get_value(name)
+                except KeyError:
+                    continue
+            raise
 
     def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
         try:
@@ -186,7 +189,7 @@ class Scope:
 
     def set_value(self, name: str, value: Any | Missing, /) -> None:
         assert isinstance(name, str), name
-        assert name in self._objects
+        assert self._checked_get_object(name) is not None, name
         if value is MISSING:
             assert name in self._values
             self._values.pop(name, None)
@@ -194,12 +197,22 @@ class Scope:
             self._values[name] = value
 
     def strict_get_object(self, name: str, /) -> Object:
-        for included_object in self._included_objects:
-            try:
-                return included_object.strict_get_attribute(name)
-            except KeyError:
-                continue
-        return self._objects[name]
+        assert isinstance(name, str), name
+        try:
+            return self._objects[name]
+        except KeyError:
+            for included_object in self._included_objects:
+                try:
+                    return included_object.strict_get_attribute(name)
+                except KeyError:
+                    continue
+            raise
+
+    def _checked_get_object(self, name: str, /) -> Object | None:
+        try:
+            return self.get_object(name)
+        except KeyError:
+            return None
 
     _kind: ScopeKind
     _module_path: ModulePath
