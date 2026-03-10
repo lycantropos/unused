@@ -37,12 +37,12 @@ class Class:
         return ObjectKind.UNKNOWN_CLASS
 
     @property
-    def module_path(self, /) -> ModulePath:
-        return self._scope.module_path
-
-    @property
     def local_path(self, /) -> LocalObjectPath:
         return self._scope.local_path
+
+    @property
+    def module_path(self, /) -> ModulePath:
+        return self._scope.module_path
 
     def as_object(self, /) -> AttributeMapping:
         return AttributeMapping(
@@ -54,31 +54,6 @@ class Class:
                 ],
             )
         )
-
-    def get_mutable_attribute(self, name: str, /) -> MutableObject:
-        return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
-
-    def get_mutable_nested_attribute(
-        self, local_path: LocalObjectPath, /
-    ) -> MutableObject:
-        return ensure_type(
-            self.get_nested_attribute(local_path), MUTABLE_OBJECT_CLASSES
-        )
-
-    def get_nested_attribute(self, local_path: LocalObjectPath, /) -> Object:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        initial_object: Object = self
-        return functools.reduce(
-            object_get_attribute, local_path.components, initial_object
-        )
-
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
 
     def get_attribute(self, name: str, /) -> Object:
         try:
@@ -114,6 +89,31 @@ class Class:
             if candidate.kind is ObjectKind.DESCRIPTOR:
                 return UnknownObject(self.module_path, candidate.local_path)
             return candidate
+
+    def get_mutable_attribute(self, name: str, /) -> MutableObject:
+        return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
+
+    def get_mutable_nested_attribute(
+        self, local_path: LocalObjectPath, /
+    ) -> MutableObject:
+        return ensure_type(
+            self.get_nested_attribute(local_path), MUTABLE_OBJECT_CLASSES
+        )
+
+    def get_nested_attribute(self, local_path: LocalObjectPath, /) -> Object:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        initial_object: Object = self
+        return functools.reduce(
+            object_get_attribute, local_path.components, initial_object
+        )
+
+    def get_value(self, name: str, /) -> Any:
+        assert isinstance(name, str), name
+        return self._values[name]
+
+    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
+        assert isinstance(name, str), name
+        return self._values.get(name, default)
 
     def safe_delete_value(self, name: str, /) -> bool:
         assert isinstance(name, str), name
@@ -303,13 +303,11 @@ class Instance:
                         self._module_path, candidate.local_path
                     )
                 return candidate
-            if self.kind is ObjectKind.INSTANCE:
-                assert name not in self._objects
-                self._objects[name] = result = UnknownObject(
-                    self.module_path, self.local_path.join(name)
-                )
-                return result
-            raise
+            assert name not in self._objects
+            self._objects[name] = result = UnknownObject(
+                self.module_path, self.local_path.join(name)
+            )
+            return result
 
     def safe_delete_value(self, name: str, /) -> bool:
         assert isinstance(name, str), name
@@ -1359,8 +1357,6 @@ CLASS_OBJECT_KINDS: Final = (
     ObjectKind.METACLASS,
     ObjectKind.UNKNOWN_CLASS,
 )
-PlainObjectKind: TypeAlias = Literal[ObjectKind.INSTANCE]
-PLAIN_OBJECT_KINDS: Final = (ObjectKind.INSTANCE,)
 CLASS_SCOPE_KINDS: Final = (
     ScopeKind.CLASS,
     ScopeKind.METACLASS,
