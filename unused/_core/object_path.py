@@ -8,7 +8,7 @@ import types
 import typing
 from collections.abc import Iterable, Sequence
 from itertools import accumulate
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, TypeAlias
 
 from typing_extensions import Self
 
@@ -158,6 +158,9 @@ class LocalObjectPath:
             f'{type(self).__qualname__}'
             f'({", ".join(map(repr, self._components))})'
         )
+
+
+ObjectPath: TypeAlias = tuple[ModulePath, LocalObjectPath]
 
 
 def _is_object_path_component_valid(component: str, /) -> bool:
