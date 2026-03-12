@@ -193,8 +193,8 @@ class Class:
             raise
 
     _attributes: dict[str, Object]
-    _bases: Sequence[Object]
-    _metaclass: Object | Missing
+    _bases: Sequence[MutableObject]
+    _metaclass: MutableObject | Missing
     _scope: Scope
     _values: dict[str, Any]
 
@@ -214,7 +214,11 @@ class Class:
         )
 
     def __init__(
-        self, scope: Scope, /, *bases: Object, metaclass: Object | Missing
+        self,
+        scope: Scope,
+        /,
+        *bases: MutableObject,
+        metaclass: MutableObject | Missing,
     ) -> None:
         assert scope.kind in CLASS_SCOPE_KINDS, scope
         assert [
@@ -922,11 +926,10 @@ class Descriptor:
     def as_object(self, /) -> AttributeMapping:
         return AttributeMapping(
             MappingChain(
-                self._values,
                 *[
-                    included_object._values  # noqa: SLF001
-                    for included_object in self._base_classes
-                ],
+                    base_cls._values  # noqa: SLF001
+                    for base_cls in self._base_classes
+                ]
             )
         )
 
@@ -947,55 +950,34 @@ class Descriptor:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
     def get_attribute(self, name: str, /) -> Object:
         return self.strict_get_attribute(name)
 
     def strict_get_attribute(self, name: str, /) -> Object:
-        try:
-            return self._objects[name]
-        except KeyError:
-            for base_cls in self._base_classes:
-                try:
-                    candidate = base_cls.get_attribute(name)
-                except KeyError:
-                    continue
-                else:
-                    if candidate.kind is ObjectKind.ROUTINE:
-                        candidate = Method(candidate, self)
-                    return candidate
-            raise
+        for base_cls in self._base_classes:
+            try:
+                candidate = base_cls.get_attribute(name)
+            except KeyError:
+                continue
+            else:
+                if candidate.kind is ObjectKind.ROUTINE:
+                    candidate = Method(candidate, self)
+                return candidate
+        raise KeyError(name)
 
     _ast_node: AnyFunctionDefinitionAstNode | None
     _base_classes: Sequence[Class | UnknownObject]
-    _module_path: ModulePath
     _local_path: LocalObjectPath
+    _module_path: ModulePath
     _objects: dict[str, Object]
-    _values: dict[str, Any]
 
-    __slots__ = (
-        '_ast_node',
-        '_base_classes',
-        '_local_path',
-        '_module_path',
-        '_objects',
-        '_values',
-    )
+    __slots__ = '_ast_node', '_base_classes', '_local_path', '_module_path'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
-                and self._objects == other._objects
-                and self._values == other._values
                 and self._base_classes == other._base_classes
             )
             if isinstance(other, type(self))
@@ -1015,9 +997,7 @@ class Descriptor:
             self._base_classes,
             self._local_path,
             self._module_path,
-            self._objects,
-            self._values,
-        ) = ast_node, base_classes, local_path, module_path, {}, {}
+        ) = ast_node, base_classes, local_path, module_path
 
     def __repr__(self, /) -> str:
         return (

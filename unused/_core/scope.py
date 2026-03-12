@@ -173,14 +173,16 @@ class Scope:
         if len(first_components) == 0:
             self._values[last_component] = value
         else:
-            object_ = self.get_object(first_components[0])
+            object_ = self.get_mutable_object(first_components[0])
             for component in first_components[1:]:
-                if component not in object_._values:  # noqa: SLF001
-                    object_._values[component] = (  # noqa: SLF001
-                        object_.get_attribute(component).as_object()
-                    )
-                object_ = object_.get_attribute(component)
-            object_._values[last_component] = value  # noqa: SLF001
+                next_object = object_.get_mutable_attribute(component)
+                if (
+                    object_.get_value_or_else(component, default=MISSING)
+                    is MISSING
+                ):
+                    object_.set_value(component, next_object.as_object())
+                object_ = next_object
+            object_.set_value(last_component, value)
 
     def set_object(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -218,7 +220,7 @@ class Scope:
     _module_path: ModulePath
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
-    _included_objects: list[Object]
+    _included_objects: list[MutableObject]
     _values: dict[str, Any]
 
     __slots__ = (
