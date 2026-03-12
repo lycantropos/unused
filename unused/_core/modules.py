@@ -40,8 +40,6 @@ from .object_ import (
 )
 from .object_path import (
     BUILTINS_MODULE_PATH,
-    FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-    FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
     ObjectPath,
@@ -957,50 +955,8 @@ def _parse_modules(
                         value_local_path,
                         value_base_cls,
                         ast_node=value_ast_node,
-                    )
-                    value_object.set_attribute(
-                        FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
-                        Instance(
-                            value_module_path,
-                            value_local_path.join(
-                                FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
-                            ),
-                            cls=ensure_type(
-                                _path_to_object(
-                                    result,
-                                    namespace_value_id_origin_paths[
-                                        _namespace_value_id(builtins.tuple)
-                                    ],
-                                ),
-                                Class,
-                            ),
-                        ),
-                    )
-                    value_object.set_value(
-                        FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
-                        value.__defaults__ or (),
-                    )
-                    value_object.set_attribute(
-                        FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-                        Instance(
-                            value_module_path,
-                            value_local_path.join(
-                                FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
-                            ),
-                            cls=ensure_type(
-                                _path_to_object(
-                                    result,
-                                    namespace_value_id_origin_paths[
-                                        _namespace_value_id(builtins.dict)
-                                    ],
-                                ),
-                                Class,
-                            ),
-                        ),
-                    )
-                    value_object.set_value(
-                        FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-                        value.__kwdefaults__ or {},
+                        keyword_only_defaults=value.__kwdefaults__ or {},
+                        positional_defaults=value.__defaults__ or (),
                     )
                     value_object.set_attribute(
                         '__code__',
@@ -1032,6 +988,8 @@ def _parse_modules(
                         value_local_path,
                         value_base_cls,
                         ast_node=value_ast_node,
+                        keyword_only_defaults={},
+                        positional_defaults=(),
                     )
                 else:
                     assert isinstance(

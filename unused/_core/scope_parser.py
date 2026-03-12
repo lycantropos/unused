@@ -17,7 +17,12 @@ from typing_extensions import override
 from .construction import construct_object_from_expression_node
 from .context import Context, FunctionCallContext, NullContext
 from .enums import ObjectKind, ScopeKind
-from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
+from .evaluation import (
+    EVALUATION_EXCEPTIONS,
+    evaluate_expression_node,
+    function_node_to_keyword_only_defaults,
+    function_node_to_positional_defaults,
+)
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
 from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
@@ -252,7 +257,11 @@ def _does_function_modify_caller_global_state(
             module_file_paths=module_file_paths,
         )
         cache[cache_key] = result = False
-        for function_body_node in function_definition_node.body:
+        for function_body_node in (
+            [function_definition_node.body]
+            if isinstance(function_definition_node, ast.Lambda)
+            else function_definition_node.body
+        ):
             function_body_parser.visit(function_body_node)
             if caller_module_scope.kind is ScopeKind.DYNAMIC_MODULE:
                 result = True
@@ -1214,6 +1223,19 @@ class ScopeParser(ast.NodeVisitor):
         function_name = node.name
         function_object: Object
         function_local_path = self._scope.local_path.join(function_name)
+        signature_node = node.args
+        keyword_only_defaults = function_node_to_keyword_only_defaults(
+            signature_node,
+            self._scope,
+            *self._parent_scopes,
+            context=self._context,
+        )
+        positional_defaults = function_node_to_positional_defaults(
+            signature_node,
+            self._scope,
+            *self._parent_scopes,
+            context=self._context,
+        )
         for decorator_node in node.decorator_list:
             decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
@@ -1276,6 +1298,8 @@ class ScopeParser(ast.NodeVisitor):
                         decorator_object.local_path,
                     ),
                     ast_node=node,
+                    keyword_only_defaults=keyword_only_defaults,
+                    positional_defaults=positional_defaults,
                 )
                 break
             if (
@@ -1313,6 +1337,8 @@ class ScopeParser(ast.NodeVisitor):
                             Class,
                         ),
                         ast_node=node,
+                        keyword_only_defaults=keyword_only_defaults,
+                        positional_defaults=positional_defaults,
                     )
                     function_object.set_attribute('__func__', wrapped_object)
                 break
@@ -1327,6 +1353,8 @@ class ScopeParser(ast.NodeVisitor):
                     Class,
                 ),
                 ast_node=node,
+                keyword_only_defaults=keyword_only_defaults,
+                positional_defaults=positional_defaults,
             )
             function_object.set_attribute(
                 '__code__',
@@ -1346,66 +1374,6 @@ class ScopeParser(ast.NodeVisitor):
             and self._scope.kind is ScopeKind.STATIC_MODULE
         ):
             self._scope.mark_module_as_dynamic()
-        positional_defaults = []
-        for positional_default_node in node.args.defaults:
-            try:
-                positional_default_value = self._evaluate_expression_node(
-                    positional_default_node
-                )
-            except EVALUATION_EXCEPTIONS:
-                positional_default_value = MISSING
-            positional_defaults.append(positional_default_value)
-        keyword_only_defaults = {}
-        for keyword_parameter_node, keyword_default_node in zip(
-            node.args.kwonlyargs, node.args.kw_defaults, strict=True
-        ):
-            if keyword_default_node is None:
-                continue
-            try:
-                keyword_only_default_value = self._evaluate_expression_node(
-                    keyword_default_node
-                )
-            except EVALUATION_EXCEPTIONS:
-                keyword_only_default_value = MISSING
-            keyword_only_defaults[keyword_parameter_node.arg] = (
-                keyword_only_default_value
-            )
-        function_object.set_attribute(
-            FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
-            Instance(
-                function_object.module_path,
-                function_object.local_path.join(
-                    FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME
-                ),
-                cls=ensure_type(
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_TUPLE_LOCAL_OBJECT_PATH
-                    ),
-                    Class,
-                ),
-            ),
-        )
-        function_object.set_value(
-            FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME, positional_defaults
-        )
-        function_object.set_attribute(
-            FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
-            Instance(
-                function_object.module_path,
-                function_object.local_path.join(
-                    FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME
-                ),
-                cls=ensure_type(
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_DICT_LOCAL_OBJECT_PATH
-                    ),
-                    Class,
-                ),
-            ),
-        )
-        function_object.set_value(
-            FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME, keyword_only_defaults
-        )
         self._scope.set_object(function_name, function_object)
 
 

@@ -6,11 +6,16 @@ import functools
 
 from .context import Context
 from .enums import ObjectKind, ScopeKind
-from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
+from .evaluation import (
+    EVALUATION_EXCEPTIONS,
+    evaluate_expression_node,
+    function_node_to_keyword_only_defaults,
+    function_node_to_positional_defaults,
+)
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
 from .missing import MISSING
-from .modules import BUILTINS_MODULE, MODULES
-from .object_ import Call, Class, Instance, Object, UnknownObject
+from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
+from .object_ import Call, Class, Instance, Object, Routine, UnknownObject
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
@@ -25,6 +30,7 @@ from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
+    TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
 )
 from .scope import Scope
 from .utils import ensure_type
@@ -257,6 +263,35 @@ def _(
                 BUILTINS_DICT_LOCAL_OBJECT_PATH
             ),
             Class,
+        ),
+    )
+
+
+@construct_object_from_expression_node.register(ast.Lambda)
+def _(
+    node: ast.Lambda,
+    scope: Scope,
+    /,
+    *parent_scopes: Scope,
+    context: Context,
+    local_path: LocalObjectPath,
+    module_path: ModulePath,
+) -> Object:
+    return Routine(
+        module_path,
+        local_path,
+        ensure_type(
+            TYPES_MODULE.get_nested_attribute(
+                TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        ast_node=node,
+        keyword_only_defaults=function_node_to_keyword_only_defaults(
+            node.args, scope, *parent_scopes, context=context
+        ),
+        positional_defaults=function_node_to_positional_defaults(
+            node.args, scope, *parent_scopes, context=context
         ),
     )
 

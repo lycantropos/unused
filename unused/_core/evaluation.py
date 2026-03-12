@@ -4,11 +4,12 @@ import ast
 import builtins
 import functools
 import operator
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
 from .context import Context
 from .lookup import lookup_object_by_expression_node
+from .missing import MISSING
 from .object_path import BUILTINS_MODULE_PATH, LocalObjectPath, ModulePath
 from .scope import Scope
 
@@ -457,3 +458,45 @@ def _(
             node.operand, scope, *parent_scopes, context=context
         )
     )
+
+
+def function_node_to_keyword_only_defaults(
+    signature_node: ast.arguments,
+    scope: Scope,
+    /,
+    *parent_scopes: Scope,
+    context: Context,
+) -> Mapping[Any, Any]:
+    result: dict[Any, Any] = {}
+    for keyword_parameter_node, keyword_default_node in zip(
+        signature_node.kwonlyargs, signature_node.kw_defaults, strict=True
+    ):
+        if keyword_default_node is None:
+            continue
+        try:
+            keyword_only_default_value = evaluate_expression_node(
+                keyword_default_node, scope, *parent_scopes, context=context
+            )
+        except EVALUATION_EXCEPTIONS:
+            keyword_only_default_value = MISSING
+        result[keyword_parameter_node.arg] = keyword_only_default_value
+    return result
+
+
+def function_node_to_positional_defaults(
+    signature_node: ast.arguments,
+    scope: Scope,
+    /,
+    *parent_scopes: Scope,
+    context: Context,
+) -> Sequence[Any]:
+    result: list[Any] = []
+    for positional_default_node in signature_node.defaults:
+        try:
+            positional_default_value = evaluate_expression_node(
+                positional_default_node, scope, *parent_scopes, context=context
+            )
+        except EVALUATION_EXCEPTIONS:
+            positional_default_value = MISSING
+        result.append(positional_default_value)
+    return result
