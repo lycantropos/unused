@@ -444,7 +444,7 @@ class ScopeParser(ast.NodeVisitor):
                     base_node,
                     local_path=cls_local_path.join(
                         # FIXME: add support for indexing?
-                        f'__bases___{index}'
+                        f'__bases_{index}__'
                     ),
                     module_path=cls_module_path,
                 ),
