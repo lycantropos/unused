@@ -102,8 +102,11 @@ def _(
         return (
             Class(
                 Scope(ScopeKind.METACLASS, module_path, local_path),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_TYPE_LOCAL_OBJECT_PATH
+                ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_TYPE_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
                 metaclass=MISSING,
             )
@@ -126,8 +129,11 @@ def _(
                     module_path,
                     local_path,
                 ),
-                BUILTINS_MODULE.get_nested_attribute(
-                    BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
                 ),
                 metaclass=MISSING,
             )
@@ -184,11 +190,17 @@ def _(
         )
         named_tuple_object = Class(
             Scope(ScopeKind.CLASS, module_path, local_path),
-            BUILTINS_MODULE.get_nested_attribute(
-                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+            ensure_type(
+                BUILTINS_MODULE.get_nested_attribute(
+                    BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+                ),
+                Class,
             ),
-            BUILTINS_MODULE.get_nested_attribute(
-                BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+            ensure_type(
+                BUILTINS_MODULE.get_nested_attribute(
+                    BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                ),
+                Class,
             ),
             metaclass=MISSING,
         )

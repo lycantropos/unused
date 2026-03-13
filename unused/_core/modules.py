@@ -31,6 +31,7 @@ from .object_ import (
     Class,
     Descriptor,
     Instance,
+    MUTABLE_OBJECT_CLASSES,
     Method,
     Module,
     MutableObject,
@@ -866,7 +867,7 @@ def _parse_modules(
                         value_local_path,
                     ),
                     *[
-                        base_cls
+                        ensure_type(base_cls, MUTABLE_OBJECT_CLASSES)
                         for base_cls in base_cls_objects
                         if base_cls is not None
                     ],
@@ -887,8 +888,11 @@ def _parse_modules(
                         else ()
                     ),
                     metaclass=(
-                        _path_to_object_or_unknown(
-                            result, metacls_paths[value_path]
+                        ensure_type(
+                            _path_to_object_or_unknown(
+                                result, metacls_paths[value_path]
+                            ),
+                            MUTABLE_OBJECT_CLASSES,
                         )
                         if (
                             not _is_metaclass(value)
@@ -1061,22 +1065,9 @@ def _locate_non_module_namespace_objects(
     topologically_sorted_value_ids = (
         _to_topologically_sorted_sequence_resolving_cycles_by_deletion(
             {
-                value_id: {
-                    _namespace_value_id(parent_value)
-                    for path in value_paths
-                    for parent_path in _to_parent_paths(path)
-                    if (
-                        (
-                            (
-                                parent_value := located_namespace_values.get(
-                                    parent_path
-                                )
-                            )
-                            is not None
-                        )
-                        and not inspect.ismodule(parent_value)
-                    )
-                }
+                value_id: _value_paths_to_true_parent_ids(
+                    value_paths, located_namespace_values
+                )
                 for value_id, value_paths in namespace_value_id_paths.items()
                 if not inspect.ismodule(namespace_value_id_values[value_id])
             }
@@ -1175,6 +1166,49 @@ def _locate_non_module_namespace_objects(
             if candidate_path == origin_path:
                 continue
             _add_reference(references, candidate_path, origin_path)
+
+
+def _value_paths_to_true_parent_ids(
+    value_paths: Sequence[ObjectPath],
+    located_namespace_values: MutableMapping[ObjectPath, _NamespaceValue],
+    /,
+) -> set[_Id]:
+    unique_value_paths: list[ObjectPath] = []
+    value_path_iterator = iter(
+        sorted(
+            value_paths,
+            key=lambda object_path: _object_path_to_full_name(*object_path),
+        )
+    )
+    cursor_module_path, cursor_local_path = next(value_path_iterator)
+    unique_value_paths.append((cursor_module_path, cursor_local_path))
+    while True:
+        try:
+            next_module_path, next_local_path = next(value_path_iterator)
+        except StopIteration:
+            break
+        if (
+            cursor_module_path == next_module_path
+            and next_local_path.starts_with(cursor_local_path)
+        ):
+            continue
+        cursor_module_path, cursor_local_path = (
+            next_module_path,
+            next_local_path,
+        )
+        unique_value_paths.append((cursor_module_path, cursor_local_path))
+    return {
+        _namespace_value_id(parent_value)
+        for path in unique_value_paths
+        for parent_path in _to_parent_paths(path)
+        if (
+            (
+                (parent_value := located_namespace_values.get(parent_path))
+                is not None
+            )
+            and not inspect.ismodule(parent_value)
+        )
+    }
 
 
 def _collect_rest_object_dependencies(
