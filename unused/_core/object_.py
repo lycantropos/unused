@@ -193,8 +193,8 @@ class Class:
             raise
 
     _attributes: dict[str, Object]
-    _bases: Sequence[MutableObject]
-    _metaclass: MutableObject | Missing
+    _bases: Sequence[ClassObject]
+    _metaclass: ClassObject | Missing
     _scope: Scope
     _values: dict[str, Any]
 
@@ -217,8 +217,8 @@ class Class:
         self,
         scope: Scope,
         /,
-        *bases: MutableObject,
-        metaclass: MutableObject | Missing,
+        *bases: ClassObject,
+        metaclass: ClassObject | Missing,
     ) -> None:
         assert scope.kind in CLASS_SCOPE_KINDS, scope
         assert [
@@ -1286,6 +1286,9 @@ class UnknownObject:
         )
 
 
+ClassObject: TypeAlias = Class | Instance | Routine | Call | UnknownObject
+CLASS_OBJECT_CLASSES: Final = (Class, Instance, Routine, Call, UnknownObject)
+assert get_args(ClassObject) == CLASS_OBJECT_CLASSES
 MutableObject: TypeAlias = (
     Class | Module | Instance | Routine | Call | UnknownObject
 )

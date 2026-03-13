@@ -28,10 +28,10 @@ from .file_system import load_module_file_paths
 from .missing import MISSING
 from .object_ import (
     CALLABLE_OBJECT_CLASSES,
+    CLASS_OBJECT_CLASSES,
     Class,
     Descriptor,
     Instance,
-    MUTABLE_OBJECT_CLASSES,
     Method,
     Module,
     MutableObject,
@@ -867,7 +867,7 @@ def _parse_modules(
                         value_local_path,
                     ),
                     *[
-                        ensure_type(base_cls, MUTABLE_OBJECT_CLASSES)
+                        ensure_type(base_cls, CLASS_OBJECT_CLASSES)
                         for base_cls in base_cls_objects
                         if base_cls is not None
                     ],
@@ -892,7 +892,7 @@ def _parse_modules(
                             _path_to_object_or_unknown(
                                 result, metacls_paths[value_path]
                             ),
-                            MUTABLE_OBJECT_CLASSES,
+                            CLASS_OBJECT_CLASSES,
                         )
                         if (
                             not _is_metaclass(value)

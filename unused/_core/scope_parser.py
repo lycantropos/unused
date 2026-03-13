@@ -27,8 +27,10 @@ from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
 from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
 from .object_ import (
+    CLASS_OBJECT_CLASSES,
     CLASS_SCOPE_KINDS,
     Class,
+    ClassObject,
     Descriptor,
     Instance,
     Module,
@@ -41,6 +43,7 @@ from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
+    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     DICT_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
@@ -74,7 +77,7 @@ BUILTINS_STR_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
 
 
 def _does_function_modify_caller_global_state(
-    function_object: Object,
+    function_object: Routine,
     /,
     *function_call_scopes: Scope,
     cache: dict[tuple[ModulePath, LocalObjectPath], bool] = {},  # noqa: B006
@@ -433,16 +436,19 @@ class ScopeParser(ast.NodeVisitor):
         cls_name = node.name
         cls_module_path = self._scope.module_path
         cls_local_path = self._scope.local_path.join(cls_name)
-        base_cls_objects: list[Object] = []
+        base_cls_objects: list[ClassObject] = []
         for index, base_node in reversed([*enumerate(node.bases)]):
             self.visit(base_node)
-            base_cls = self._construct_object_from_expression_node(
-                base_node,
-                local_path=cls_local_path.join(
-                    # FIXME: add support for indexing?
-                    f'__bases___{index}'
+            base_cls = ensure_type(
+                self._construct_object_from_expression_node(
+                    base_node,
+                    local_path=cls_local_path.join(
+                        # FIXME: add support for indexing?
+                        f'__bases___{index}'
+                    ),
+                    module_path=cls_module_path,
                 ),
-                module_path=cls_module_path,
+                CLASS_OBJECT_CLASSES,
             )
             if base_cls is None:
                 continue
@@ -477,13 +483,16 @@ class ScopeParser(ast.NodeVisitor):
         )
         for body_node in node.body:
             cls_parser.visit(body_node)
-        metacls_object: Object | Missing = MISSING
+        metacls_object: Class | Missing = MISSING
         for keyword in node.keywords:
             if keyword.arg == 'metaclass':
-                metacls_object = self._construct_object_from_expression_node(
-                    keyword.value,
-                    local_path=cls_local_path.join('__class__'),
-                    module_path=cls_module_path,
+                metacls_object = ensure_type(
+                    self._construct_object_from_expression_node(
+                        keyword.value,
+                        local_path=cls_local_path.join('__class__'),
+                        module_path=cls_module_path,
+                    ),
+                    Class,
                 )
                 if metacls_object is None:
                     continue
@@ -495,8 +504,11 @@ class ScopeParser(ast.NodeVisitor):
             cls_scope,
             *(
                 [
-                    BUILTINS_MODULE.get_nested_attribute(
-                        LocalObjectPath.from_object_name(object.__qualname__)
+                    ensure_type(
+                        BUILTINS_MODULE.get_nested_attribute(
+                            BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                        ),
+                        Class,
                     )
                 ]
                 if len(node.bases) == 0
