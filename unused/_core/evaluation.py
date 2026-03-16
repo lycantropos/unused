@@ -342,14 +342,18 @@ def _(
 ) -> Any:
     name = node.id
     try:
-        return scope.get_value(name)
+        object_ = scope.get_object(name)
     except KeyError:
         for parent_scope in parent_scopes:
             try:
-                return parent_scope.get_value(name)
+                object_ = parent_scope.get_object(name)
             except KeyError:
                 continue
+            else:
+                return object_.value
         raise NameError(name) from None
+    else:
+        return object_.value
 
 
 @evaluate_expression_node.register(ast.Set)

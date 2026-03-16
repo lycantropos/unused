@@ -5,14 +5,16 @@ from typing import Any, TypeVar
 
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
+from .mapped_mapping import MappedMapping
 from .mapping_chain import MappingChain
-from .missing import MISSING, Missing
+from .missing import MISSING
 from .object_ import (
     MUTABLE_OBJECT_CLASSES,
     MutableObject,
     Object,
     UnknownObject,
     object_get_attribute,
+    to_object_value,
 )
 from .object_path import LocalObjectPath, ModulePath
 from .utils import ensure_type
@@ -33,14 +35,18 @@ class Scope:
     def local_path(self, /) -> LocalObjectPath:
         return self._local_path
 
-    def as_object(self, /) -> AttributeMapping:
+    @property
+    def value(self, /) -> AttributeMapping:
         return AttributeMapping(
-            MappingChain(
-                self._values,
-                *[
-                    included_object._values  # noqa: SLF001
-                    for included_object in self._included_objects
-                ],
+            MappedMapping(
+                to_object_value,
+                MappingChain(
+                    self._objects,
+                    *[
+                        included_object._objects  # noqa: SLF001
+                        for included_object in self._included_objects
+                    ],
+                ),
             )
         )
 
@@ -85,28 +91,10 @@ class Scope:
             ):
                 assert name not in self._objects
                 self._objects[name] = result = UnknownObject(
-                    self.module_path, self.local_path.join(name)
+                    self.module_path, self.local_path.join(name), value=MISSING
                 )
                 return result
             raise
-
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        try:
-            return self._values[name]
-        except KeyError:
-            for included_object in self._included_objects:
-                try:
-                    return included_object.get_value(name)
-                except KeyError:
-                    continue
-            raise
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        try:
-            return self.get_value(name)
-        except KeyError:
-            return default
 
     def include_object(self, object_: Object, /) -> None:
         assert object_.kind in (
@@ -126,19 +114,6 @@ class Scope:
     def mark_module_as_dynamic(self, /) -> None:
         assert self._kind is ScopeKind.STATIC_MODULE
         self._kind = ScopeKind.DYNAMIC_MODULE
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert len(local_path.components) > 0, local_path
-        if len(local_path.components) == 1:
-            return self.safe_delete_value(local_path.components[-1])
-        return self.get_mutable_nested_object(
-            local_path.parent
-        ).safe_delete_value(local_path.components[-1])
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
 
     def set_nested_object(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -162,41 +137,10 @@ class Scope:
         else:
             self.set_object(last_component, object_)
 
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(self.get_nested_object(local_path), Object)
-        assert value is not MISSING
-        assert len(local_path.components) > 0
-        *first_components, last_component = local_path.components
-        if len(first_components) == 0:
-            self._values[last_component] = value
-        else:
-            object_ = self.get_mutable_object(first_components[0])
-            for component in first_components[1:]:
-                next_object = object_.get_mutable_attribute(component)
-                if (
-                    object_.get_value_or_else(component, default=MISSING)
-                    is MISSING
-                ):
-                    object_.set_value(component, next_object.as_object())
-                object_ = next_object
-            object_.set_value(last_component, value)
-
     def set_object(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
         self._objects[name] = object_
-
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert self._checked_get_object(name) is not None, name
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        else:
-            self._values[name] = value
 
     def strict_get_object(self, name: str, /) -> Object:
         assert isinstance(name, str), name
@@ -221,7 +165,6 @@ class Scope:
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
     _included_objects: list[MutableObject]
-    _values: dict[str, Any]
 
     __slots__ = (
         '_included_objects',
@@ -229,7 +172,6 @@ class Scope:
         '_local_path',
         '_module_path',
         '_objects',
-        '_values',
     )
 
     def __eq__(self, other: Any, /) -> Any:
@@ -239,7 +181,6 @@ class Scope:
                 and self._module_path == other._module_path
                 and self._local_path == other._local_path
                 and self._objects == other._objects
-                and self._values == other._values
                 and self._included_objects == other._included_objects
             )
             if isinstance(other, type(self))
@@ -259,8 +200,7 @@ class Scope:
             self._local_path,
             self._module_path,
             self._objects,
-            self._values,
-        ) = [], kind, local_path, module_path, {}, {}
+        ) = [], kind, local_path, module_path, {}
 
     def __repr__(self, /) -> str:
         return (

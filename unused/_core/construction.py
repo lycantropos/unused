@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 import functools
+from typing import Any
 
 from .context import Context
 from .enums import ObjectKind, ScopeKind
@@ -13,16 +14,22 @@ from .evaluation import (
     function_node_to_positional_defaults,
 )
 from .lookup import lookup_object_by_expression_node, lookup_object_by_name
-from .missing import MISSING
+from .missing import MISSING, Missing
 from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
 from .object_ import Call, Class, Instance, Object, Routine, UnknownObject
 from .object_path import (
+    BUILTINS_BOOL_LOCAL_OBJECT_PATH,
+    BUILTINS_BYTES_LOCAL_OBJECT_PATH,
+    BUILTINS_COMPLEX_LOCAL_OBJECT_PATH,
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
+    BUILTINS_FLOAT_LOCAL_OBJECT_PATH,
     BUILTINS_GLOBALS_LOCAL_OBJECT_PATH,
+    BUILTINS_INT_LOCAL_OBJECT_PATH,
     BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
     BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_SET_LOCAL_OBJECT_PATH,
+    BUILTINS_STR_LOCAL_OBJECT_PATH,
     BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     COLLECTIONS_MODULE_PATH,
@@ -30,7 +37,9 @@ from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
+    TYPES_ELLIPSIS_TYPE_LOCAL_OBJECT_PATH,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
+    TYPES_NONE_TYPE_LOCAL_OBJECT_PATH,
 )
 from .scope import Scope
 from .utils import ensure_type
@@ -38,15 +47,23 @@ from .utils import ensure_type
 
 @functools.singledispatch
 def construct_object_from_expression_node(
-    _node: ast.expr,
-    _scope: Scope,
+    node: ast.expr,
+    scope: Scope,
     /,
-    *_parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
+    *parent_scopes: Scope,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
-    return UnknownObject(module_path, local_path)
+    try:
+        value = evaluate_expression_node(
+            node, scope, *parent_scopes, context=context
+        )
+    except EVALUATION_EXCEPTIONS:
+        value = MISSING
+    return value_to_object(
+        value, module_path=module_path, local_path=local_path
+    )
 
 
 @construct_object_from_expression_node.register(ast.Attribute)
@@ -69,7 +86,7 @@ def _(
             return value_object.get_attribute(attribute_name)
         except KeyError:
             raise AttributeError(attribute_name) from None
-    return UnknownObject(module_path, local_path)
+    return UnknownObject(module_path, local_path, value=MISSING)
 
 
 @construct_object_from_expression_node.register(ast.Call)
@@ -86,7 +103,7 @@ def _(
         node.func, scope, *parent_scopes, context=context
     )
     if callable_object is None:
-        return UnknownObject(module_path, local_path)
+        return UnknownObject(module_path, local_path, value=MISSING)
     if callable_object.module_path == BUILTINS_MODULE_PATH and (
         callable_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
     ):
@@ -139,7 +156,9 @@ def _(
             )
         )
     if callable_object.kind is ObjectKind.CLASS:
-        return Instance(module_path, local_path, cls=callable_object)
+        return Instance(
+            module_path, local_path, cls=callable_object, value=MISSING
+        )
     if callable_object.kind is ObjectKind.METACLASS:
         return Class(
             Scope(ScopeKind.CLASS, module_path, local_path),
@@ -180,7 +199,7 @@ def _(
                 context=context,
             )
         except EVALUATION_EXCEPTIONS:
-            return UnknownObject(module_path, local_path)
+            return UnknownObject(module_path, local_path, value=MISSING)
         if isinstance(named_tuple_field_names, str):
             named_tuple_field_names = named_tuple_field_names.replace(
                 ',', ' '
@@ -210,6 +229,7 @@ def _(
                 UnknownObject(
                     named_tuple_object.module_path,
                     named_tuple_object.local_path.join(field_name),
+                    value=MISSING,
                 ),
             )
         return named_tuple_object
@@ -259,14 +279,20 @@ def _(
 @construct_object_from_expression_node.register(ast.Dict)
 @construct_object_from_expression_node.register(ast.DictComp)
 def _(
-    _node: ast.Dict | ast.DictComp,
-    _scope: Scope,
+    node: ast.Dict | ast.DictComp,
+    scope: Scope,
     /,
-    *_parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
+    *parent_scopes: Scope,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
+    try:
+        value = evaluate_expression_node(
+            node, scope, *parent_scopes, context=context
+        )
+    except EVALUATION_EXCEPTIONS:
+        value = MISSING
     return Instance(
         module_path,
         local_path,
@@ -276,6 +302,7 @@ def _(
             ),
             Class,
         ),
+        value=value,
     )
 
 
@@ -311,14 +338,20 @@ def _(
 @construct_object_from_expression_node.register(ast.List)
 @construct_object_from_expression_node.register(ast.ListComp)
 def _(
-    _node: ast.List | ast.ListComp,
-    _scope: Scope,
+    node: ast.List | ast.ListComp,
+    scope: Scope,
     /,
-    *_parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
+    *parent_scopes: Scope,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
+    try:
+        value = evaluate_expression_node(
+            node, scope, *parent_scopes, context=context
+        )
+    except EVALUATION_EXCEPTIONS:
+        value = MISSING
     return Instance(
         module_path,
         local_path,
@@ -328,6 +361,7 @@ def _(
             ),
             Class,
         ),
+        value=value,
     )
 
 
@@ -362,21 +396,27 @@ def _(
             )
         )
         is not None
-        else UnknownObject(module_path, local_path)
+        else UnknownObject(module_path, local_path, value=MISSING)
     )
 
 
 @construct_object_from_expression_node.register(ast.Set)
 @construct_object_from_expression_node.register(ast.SetComp)
 def _(
-    _node: ast.Set | ast.SetComp,
-    _scope: Scope,
+    node: ast.Set | ast.SetComp,
+    scope: Scope,
     /,
-    *_parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
+    *parent_scopes: Scope,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
+    try:
+        value = evaluate_expression_node(
+            node, scope, *parent_scopes, context=context
+        )
+    except EVALUATION_EXCEPTIONS:
+        value = MISSING
     return Instance(
         module_path,
         local_path,
@@ -386,19 +426,26 @@ def _(
             ),
             Class,
         ),
+        value=value,
     )
 
 
 @construct_object_from_expression_node.register(ast.Tuple)
 def _(
-    _node: ast.Tuple,
-    _scope: Scope,
+    node: ast.Tuple,
+    scope: Scope,
     /,
-    *_parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
+    *parent_scopes: Scope,
+    context: Context,
     local_path: LocalObjectPath,
     module_path: ModulePath,
 ) -> Object:
+    try:
+        value = evaluate_expression_node(
+            node, scope, *parent_scopes, context=context
+        )
+    except EVALUATION_EXCEPTIONS:
+        value = MISSING
     return Instance(
         module_path,
         local_path,
@@ -408,4 +455,82 @@ def _(
             ),
             Class,
         ),
+        value=value,
     )
+
+
+def value_to_object(
+    value: Any | Missing,
+    /,
+    *,
+    module_path: ModulePath,
+    local_path: LocalObjectPath,
+) -> Instance | UnknownObject:
+    return (
+        Instance(module_path, local_path, cls=cls, value=value)
+        if (
+            value is not MISSING
+            and (cls := _value_to_cls_object(value)) is not None
+        )
+        else UnknownObject(module_path, local_path, value=value)
+    )
+
+
+def _value_to_cls_object(value: Any, /) -> Class | None:
+    if isinstance(value, bool):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_BOOL_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if isinstance(value, bytes):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_BYTES_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if isinstance(value, complex):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_COMPLEX_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if isinstance(value, float):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_FLOAT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if isinstance(value, int):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_INT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if isinstance(value, str):
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_STR_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is None:
+        return ensure_type(
+            TYPES_MODULE.get_nested_attribute(
+                TYPES_NONE_TYPE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is Ellipsis:
+        return ensure_type(
+            TYPES_MODULE.get_nested_attribute(
+                TYPES_ELLIPSIS_TYPE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    return None

@@ -48,7 +48,7 @@ from .object_path import (
     TYPES_MODULE_PATH,
     TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH,
 )
-from .safety import is_safe
+from .safety import to_safe
 from .scope import Scope
 from .utils import AnyFunctionDefinitionAstNode, ensure_type
 
@@ -822,10 +822,11 @@ def _parse_modules(
                     cls=ensure_type(
                         _path_to_object(result, instance_cls_path), Class
                     ),
+                    value=to_safe(value),
                 )
             else:
                 value_object = UnknownObject(
-                    value_module_path, value_local_path
+                    value_module_path, value_local_path, value=to_safe(value)
                 )
         else:
             if inspect.ismodule(value):
@@ -946,7 +947,9 @@ def _parse_modules(
                     instance_cls_path = instance_cls_paths[value_path]
                 except KeyError:
                     value_base_cls = UnknownObject(
-                        value_module_path, value_local_path.join('__base__')
+                        value_module_path,
+                        value_local_path.join('__base__'),
+                        value=MISSING,
                     )
                 else:
                     value_base_cls = ensure_type(
@@ -976,6 +979,7 @@ def _parse_modules(
                                 ),
                                 Class,
                             ),
+                            value=MISSING,
                         ),
                     )
                 elif isinstance(
@@ -1014,8 +1018,6 @@ def _parse_modules(
         value_module_object.set_nested_attribute(
             value_local_path, value_object
         )
-        if is_safe(value):
-            value_module_object.set_nested_value(value_local_path, value)
     topologically_sorted_references = [
         (candidate_path, reference_path)
         for candidate_path in graphlib.TopologicalSorter(
@@ -2190,7 +2192,7 @@ def _path_to_object_or_unknown(
     try:
         return modules[module_path].get_nested_attribute(local_path)
     except KeyError:
-        return UnknownObject(module_path, local_path)
+        return UnknownObject(module_path, local_path, value=MISSING)
 
 
 def _set_absent_key(
@@ -2236,27 +2238,3 @@ Module.BASE_CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH),
     Class,
 )
-
-
-def _setup_builtin_classes() -> None:
-    for cls in [
-        builtins.bool,
-        builtins.bytearray,
-        builtins.bytes,
-        builtins.dict,
-        builtins.float,
-        builtins.frozenset,
-        builtins.int,
-        builtins.list,
-        builtins.set,
-        builtins.str,
-        builtins.tuple,
-        builtins.type,
-    ]:
-        assert inspect.isclass(cls), cls
-        BUILTINS_MODULE.set_nested_value(
-            LocalObjectPath.from_object_name(cls.__qualname__), cls
-        )
-
-
-_setup_builtin_classes()

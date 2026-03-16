@@ -5,6 +5,12 @@ import functools
 import types
 from typing import Any
 
+from .missing import MISSING, Missing
+
+
+def to_safe(value: Any, /) -> Any | Missing:
+    return value if is_safe(value) else MISSING
+
 
 @functools.singledispatch
 def is_safe(_value: Any, /) -> bool:

@@ -6,6 +6,7 @@ import uuid
 
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
+from .missing import MISSING
 from .modules import MODULES
 from .object_ import Call, Class, Instance, Object
 from .object_path import (
@@ -70,6 +71,7 @@ def _(
             callable_object.module_path,
             callable_object.local_path,
             cls=callable_object,
+            value=MISSING,
         )
     if callable_object.kind is ObjectKind.METACLASS:
         local_path = scope.local_path.join('__' + uuid.uuid4().hex)

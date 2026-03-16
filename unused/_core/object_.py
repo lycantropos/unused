@@ -16,9 +16,11 @@ from typing import (
 
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
+from .mapped_mapping import MappedMapping
 from .mapping_chain import MappingChain
 from .missing import MISSING, Missing
 from .object_path import (
+    CLASS_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
@@ -50,14 +52,18 @@ class Class:
     def module_path(self, /) -> ModulePath:
         return self._scope.module_path
 
-    def as_object(self, /) -> AttributeMapping:
+    @property
+    def value(self, /) -> AttributeMapping:
         return AttributeMapping(
-            MappingChain(
-                self._values,
-                *[
-                    base._values  # noqa: SLF001
-                    for base in self._bases
-                ],
+            MappedMapping(
+                to_object_value,
+                MappingChain(
+                    self._objects,
+                    *[
+                        base._objects  # noqa: SLF001
+                        for base in self._bases
+                    ],
+                ),
             )
         )
 
@@ -87,13 +93,15 @@ class Class:
             if self.kind is ObjectKind.UNKNOWN_CLASS:
                 assert name not in self._attributes
                 self._attributes[name] = result = UnknownObject(
-                    self.module_path, self.local_path.join(name)
+                    self.module_path, self.local_path.join(name), value=MISSING
                 )
                 return result
             raise
         else:
             if candidate.kind is ObjectKind.DESCRIPTOR:
-                return UnknownObject(self.module_path, candidate.local_path)
+                return UnknownObject(
+                    self.module_path, candidate.local_path, value=MISSING
+                )
             return candidate
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
@@ -113,27 +121,6 @@ class Class:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert len(local_path.components) > 0, local_path
-        *first_components, last_component = local_path.components
-        object_: MutableObject = self
-        for component in first_components:
-            object_ = object_.get_mutable_attribute(component)
-        return object_.safe_delete_value(last_component)
-
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
@@ -147,31 +134,6 @@ class Class:
         self.get_mutable_nested_attribute(local_path.parent).set_attribute(
             local_path.components[-1], object_
         )
-
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert name in self._attributes
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        self._values[name] = value
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert value is not MISSING
-        assert len(local_path.components) > 0
-        object_: MutableObject = self
-        for component in local_path.components[:-1]:
-            next_object = object_.get_mutable_attribute(component)
-            if (
-                object_.get_value_or_else(component, default=MISSING)
-                is MISSING
-            ):
-                object_.set_value(component, next_object.as_object())
-            object_ = next_object
-        object_.set_value(local_path.components[-1], value)
 
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
@@ -192,20 +154,22 @@ class Class:
                         pass
             raise
 
+    @property
+    def _objects(self, /) -> Mapping[str, Object]:
+        return self._scope._objects  # noqa: SLF001
+
     _attributes: dict[str, Object]
     _bases: Sequence[ClassObject]
     _metaclass: ClassObject | Missing
     _scope: Scope
-    _values: dict[str, Any]
 
-    __slots__ = '_attributes', '_bases', '_metaclass', '_scope', '_values'
+    __slots__ = '_attributes', '_bases', '_metaclass', '_scope'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._attributes == other._attributes
                 and self._scope == other._scope
-                and self._values == other._values
                 and self._bases == other._bases
                 and self._metaclass == other._metaclass
             )
@@ -226,13 +190,12 @@ class Class:
             for base_index, base in enumerate(bases)
             if base.kind in (ObjectKind.UNKNOWN, ObjectKind.UNKNOWN_CLASS)
         ] <= [len(bases) - 1]
-        (
-            self._attributes,
-            self._bases,
-            self._metaclass,
-            self._scope,
-            self._values,
-        ) = {}, bases, metaclass, scope, {}
+        self._attributes, self._bases, self._metaclass, self._scope = (
+            {},
+            bases,
+            metaclass,
+            scope,
+        )
 
     def __repr__(self, /) -> str:
         return (
@@ -258,13 +221,15 @@ class Instance:
     def module_path(self, /) -> ModulePath:
         return self._module_path
 
-    def as_object(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappingChain(
-                self._values,
-                self._cls._values,  # noqa: SLF001
-            )
-        )
+    @property
+    def value(self, /) -> Any:
+        if self._value is MISSING:
+            raise NameError(self._local_path.components[-1])
+        return self._value
+
+    @value.setter
+    def value(self, value: Any | Missing, /) -> None:
+        self._value = value
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -282,14 +247,6 @@ class Instance:
         return functools.reduce(
             object_get_attribute, local_path.components, initial_object
         )
-
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
 
     def get_attribute(self, name: str, /) -> Object:
         try:
@@ -310,24 +267,14 @@ class Instance:
                     and candidate.kind is ObjectKind.DESCRIPTOR
                 ):
                     candidate = UnknownObject(
-                        self._module_path, candidate.local_path
+                        self._module_path, candidate.local_path, value=MISSING
                     )
                 return candidate
             assert name not in self._objects
             self._objects[name] = result = UnknownObject(
-                self.module_path, self.local_path.join(name)
+                self.module_path, self.local_path.join(name), value=MISSING
             )
             return result
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        return self.get_mutable_nested_attribute(
-            local_path.parent
-        ).safe_delete_value(local_path.components[-1])
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -343,32 +290,6 @@ class Instance:
             local_path.components[-1], object_
         )
 
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert name in self._objects
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        else:
-            self._values[name] = value
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(self.get_nested_attribute(local_path), Object)
-        assert value is not MISSING
-        object_: MutableObject = self
-        for component in local_path.components[:-1]:
-            next_object = object_.get_mutable_attribute(component)
-            if (
-                object_.get_value_or_else(component, default=MISSING)
-                is MISSING
-            ):
-                object_.set_value(component, next_object.as_object())
-            object_ = next_object
-        object_.set_value(local_path.components[-1], value)
-
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
             return self._objects[name]
@@ -383,9 +304,9 @@ class Instance:
     _local_path: LocalObjectPath
     _module_path: ModulePath
     _objects: dict[str, Object]
-    _values: dict[str, Any]
+    _value: Any | Missing
 
-    __slots__ = '_cls', '_local_path', '_module_path', '_objects', '_values'
+    __slots__ = '_cls', '_local_path', '_module_path', '_objects', '_value'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
@@ -393,7 +314,7 @@ class Instance:
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
                 and self._objects == other._objects
-                and self._values == other._values
+                and self._value == other._value
                 and self._cls == other._cls
             )
             if isinstance(other, type(self))
@@ -407,14 +328,15 @@ class Instance:
         /,
         *,
         cls: Class | UnknownObject,
+        value: Any | Missing,
     ) -> None:
         (
             self._cls,
             self._local_path,
             self._module_path,
             self._objects,
-            self._values,
-        ) = cls, local_path, module_path, {}, {}
+            self._value,
+        ) = cls, local_path, module_path, {}, value
 
     def __repr__(self, /) -> str:
         return (
@@ -441,8 +363,11 @@ class Call:
     def module_path(self, /) -> ModulePath:
         return self._module_path
 
-    def as_object(self, /) -> AttributeMapping:
-        return AttributeMapping(MappingChain(self._values))
+    @property
+    def value(self, /) -> AttributeMapping:
+        return AttributeMapping(
+            MappedMapping(to_object_value, MappingChain(self._objects))
+        )
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -461,33 +386,15 @@ class Call:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
     def get_attribute(self, name: str, /) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             assert name not in self._objects
             self._objects[name] = result = UnknownObject(
-                self.module_path, self.local_path.join(name)
+                self.module_path, self.local_path.join(name), value=MISSING
             )
             return result
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        return self.get_mutable_nested_attribute(
-            local_path.parent
-        ).safe_delete_value(local_path.components[-1])
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -503,32 +410,6 @@ class Call:
             local_path.components[-1], object_
         )
 
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert name in self._objects
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        else:
-            self._values[name] = value
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(self.get_nested_attribute(local_path), Object)
-        assert value is not MISSING
-        object_: MutableObject = self
-        for component in local_path.components[:-1]:
-            next_object = object_.get_mutable_attribute(component)
-            if (
-                object_.get_value_or_else(component, default=MISSING)
-                is MISSING
-            ):
-                object_.set_value(component, next_object.as_object())
-            object_ = next_object
-        object_.set_value(local_path.components[-1], value)
-
     def strict_get_attribute(self, name: str, /) -> Object:
         return self._objects[name]
 
@@ -538,7 +419,6 @@ class Call:
     _callable: Object
     _objects: dict[str, Object]
     _positional_arguments: Sequence[tuple[Object] | Object]
-    _values: dict[str, Any]
 
     __slots__ = (
         '_callable',
@@ -547,7 +427,6 @@ class Call:
         '_module_path',
         '_objects',
         '_positional_arguments',
-        '_values',
     )
 
     def __eq__(self, other: Any, /) -> Any:
@@ -558,7 +437,6 @@ class Call:
                 and self._callable == other._callable
                 and self._keyword_arguments == other._keyword_arguments
                 and self._objects == other._objects
-                and self._values == other._values
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -580,7 +458,6 @@ class Call:
             self._objects,
             self._positional_arguments,
             self._callable,
-            self._values,
         ) = (
             keyword_arguments,
             local_path,
@@ -588,7 +465,6 @@ class Call:
             {},
             positional_arguments,
             callable_,
-            {},
         )
 
     def __repr__(self, /) -> str:
@@ -622,11 +498,15 @@ class Method:
     def routine(self, /) -> CallableObject:
         return self._routine
 
-    def as_object(self, /) -> AttributeMapping:
+    @property
+    def value(self, /) -> AttributeMapping:
         return AttributeMapping(
-            MappingChain(
-                self._values,
-                self.BASE_CLS._values,  # noqa: SLF001
+            MappedMapping(
+                to_object_value,
+                MappingChain(
+                    self._objects,
+                    self.BASE_CLS._objects,  # noqa: SLF001
+                ),
             )
         )
 
@@ -650,14 +530,6 @@ class Method:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
             return self._objects[name]
@@ -677,9 +549,8 @@ class Method:
     _instance: Object
     _objects: dict[str, Object]
     _routine: CallableObject
-    _values: dict[str, Any]
 
-    __slots__ = '_instance', '_objects', '_routine', '_values'
+    __slots__ = '_instance', '_objects', '_routine'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
@@ -687,18 +558,16 @@ class Method:
                 self._routine == other._routine
                 and self._instance == other._instance
                 and self._objects == other._objects
-                and self._values == other._values
             )
             if isinstance(other, type(self))
             else NotImplemented
         )
 
     def __init__(self, routine: CallableObject, instance: Object, /) -> None:
-        (self._instance, self._objects, self._routine, self._values) = (
+        self._instance, self._objects, self._routine = (
             instance,
             {'__self__': instance, '__func__': routine},
             routine,
-            {},
         )
 
     def __repr__(self, /) -> str:
@@ -724,14 +593,18 @@ class Routine:
     def module_path(self, /) -> ModulePath:
         return self._module_path
 
-    def as_object(self, /) -> AttributeMapping:
+    @property
+    def value(self, /) -> AttributeMapping:
         return AttributeMapping(
-            MappingChain(
-                self._values,
-                *[
-                    included_object._values  # noqa: SLF001
-                    for included_object in self._base_classes
-                ],
+            MappedMapping(
+                to_object_value,
+                MappingChain(
+                    self._objects,
+                    *[
+                        base_cls._objects  # noqa: SLF001
+                        for base_cls in self._base_classes
+                    ],
+                ),
             )
         )
 
@@ -752,26 +625,8 @@ class Routine:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
     def get_attribute(self, name: str, /) -> Object:
         return self.strict_get_attribute(name)
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        return self.get_mutable_nested_attribute(
-            local_path.parent
-        ).safe_delete_value(local_path.components[-1])
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -786,31 +641,6 @@ class Routine:
         self.get_mutable_nested_attribute(local_path.parent).set_attribute(
             local_path.components[-1], object_
         )
-
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert name in self._objects
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        else:
-            self._values[name] = value
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert value is not MISSING
-        object_: MutableObject = self
-        for component in local_path.components[:-1]:
-            next_object = object_.get_mutable_attribute(component)
-            if (
-                object_.get_value_or_else(component, default=MISSING)
-                is MISSING
-            ):
-                object_.set_value(component, next_object.as_object())
-            object_ = next_object
-        object_.set_value(local_path.components[-1], value)
 
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
@@ -832,7 +662,6 @@ class Routine:
     _module_path: ModulePath
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
-    _values: dict[str, Any]
 
     __slots__ = (
         '_ast_node',
@@ -840,7 +669,6 @@ class Routine:
         '_local_path',
         '_module_path',
         '_objects',
-        '_values',
     )
 
     def __eq__(self, other: Any, /) -> Any:
@@ -849,7 +677,6 @@ class Routine:
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
                 and self._objects == other._objects
-                and self._values == other._values
                 and self._base_classes == other._base_classes
             )
             if isinstance(other, type(self))
@@ -872,7 +699,6 @@ class Routine:
             self._local_path,
             self._module_path,
             self._objects,
-            self._values,
         ) = (
             ast_node,
             base_classes,
@@ -882,16 +708,12 @@ class Routine:
                 FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: UnknownObject(
                     module_path,
                     local_path.join(FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME),
+                    value=positional_defaults,
                 ),
                 FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME: UnknownObject(
                     module_path,
                     local_path.join(FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME),
-                ),
-            },
-            {
-                FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME: positional_defaults,
-                FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME: (
-                    keyword_only_defaults
+                    value=keyword_only_defaults,
                 ),
             },
         )
@@ -923,13 +745,17 @@ class Descriptor:
     def module_path(self, /) -> ModulePath:
         return self._module_path
 
-    def as_object(self, /) -> AttributeMapping:
+    @property
+    def value(self, /) -> AttributeMapping:
         return AttributeMapping(
-            MappingChain(
-                *[
-                    base_cls._values  # noqa: SLF001
-                    for base_cls in self._base_classes
-                ]
+            MappedMapping(
+                to_object_value,
+                MappingChain(
+                    *[
+                        base_cls._objects  # noqa: SLF001
+                        for base_cls in self._base_classes
+                    ]
+                ),
             )
         )
 
@@ -1043,13 +869,13 @@ class Module:
         return self._scope
 
     @property
-    def _values(self, /) -> dict[str, Any]:
-        return self._scope._values  # noqa: SLF001
-
-    def as_object(self, /) -> AttributeMapping:
-        return self._scope.as_object()
+    def value(self, /) -> AttributeMapping:
+        return self._scope.value
 
     def get_attribute(self, name: str, /) -> Object:
+        if name == CLASS_FIELD_NAME:
+            assert self.BASE_CLS is not None, self
+            return self.BASE_CLS
         assert isinstance(name, str), name
         try:
             return self._scope.get_object(name)
@@ -1062,7 +888,9 @@ class Module:
                 else:
                     if candidate.kind is ObjectKind.DESCRIPTOR:
                         return UnknownObject(
-                            self.module_path, candidate.local_path
+                            self.module_path,
+                            candidate.local_path,
+                            value=MISSING,
                         )
                     if candidate.kind is ObjectKind.ROUTINE:
                         return Method(candidate, self)
@@ -1073,7 +901,7 @@ class Module:
                 ObjectKind.EXTENSION_MODULE,
             ):
                 result = UnknownObject(
-                    self.module_path, self.local_path.join(name)
+                    self.module_path, self.local_path.join(name), value=MISSING
                 )
                 self._scope.set_object(name, result)
                 return result
@@ -1096,18 +924,6 @@ class Module:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        return self._scope.get_value(name)
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        return self._scope.get_value_or_else(name, default=default)
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        return self._scope.safe_delete_value(name)
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        return self._scope.safe_delete_nested_value(local_path)
-
     def set_attribute(self, name: str, object_: Object, /) -> None:
         self._scope.set_object(name, object_)
 
@@ -1116,16 +932,12 @@ class Module:
     ) -> None:
         self._scope.set_nested_object(local_path, object_)
 
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        self._scope.set_value(name, value)
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        self._scope.set_nested_value(local_path, value)
-
     def strict_get_attribute(self, name: str, /) -> Object:
         return self._scope.strict_get_object(name)
+
+    @property
+    def _objects(self, /) -> Mapping[str, Object]:
+        return self._scope._objects  # noqa: SLF001
 
     _scope: Scope
 
@@ -1158,8 +970,15 @@ class UnknownObject:
     def local_path(self, /) -> LocalObjectPath:
         return self._local_path
 
-    def as_object(self, /) -> AttributeMapping:
-        return AttributeMapping(MappingChain(self._values))
+    @property
+    def value(self, /) -> Any:
+        if self._value is MISSING:
+            raise NameError(self._local_path.components[-1])
+        return self._value
+
+    @value.setter
+    def value(self, value: Any | Missing, /) -> None:
+        self._value = value
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -1178,33 +997,15 @@ class UnknownObject:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_value(self, name: str, /) -> Any:
-        assert isinstance(name, str), name
-        return self._values[name]
-
-    def get_value_or_else(self, name: str, /, *, default: _T) -> Any | _T:
-        assert isinstance(name, str), name
-        return self._values.get(name, default)
-
     def get_attribute(self, name: str, /) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             assert name not in self._objects
             self._objects[name] = result = type(self)(
-                self.module_path, self.local_path.join(name)
+                self.module_path, self.local_path.join(name), value=MISSING
             )
             return result
-
-    def safe_delete_value(self, name: str, /) -> bool:
-        assert isinstance(name, str), name
-        return self._values.pop(name, MISSING) is not MISSING
-
-    def safe_delete_nested_value(self, local_path: LocalObjectPath, /) -> bool:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        return self.get_mutable_nested_attribute(
-            local_path.parent
-        ).safe_delete_value(local_path.components[-1])
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -1220,41 +1021,15 @@ class UnknownObject:
             local_path.components[-1], object_
         )
 
-    def set_value(self, name: str, value: Any | Missing, /) -> None:
-        assert isinstance(name, str), name
-        assert name in self._objects
-        if value is MISSING:
-            assert name in self._values
-            self._values.pop(name, None)
-        else:
-            self._values[name] = value
-
-    def set_nested_value(
-        self, local_path: LocalObjectPath, value: Any, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(self.get_nested_attribute(local_path), UnknownObject)
-        assert value is not MISSING
-        object_: MutableObject = self
-        for component in local_path.components[:-1]:
-            next_object = object_.get_mutable_attribute(component)
-            if (
-                object_.get_value_or_else(component, default=MISSING)
-                is MISSING
-            ):
-                object_.set_value(component, next_object.as_object())
-            object_ = next_object
-        object_.set_value(local_path.components[-1], value)
-
     def strict_get_attribute(self, name: str, /) -> Object:
         return self._objects[name]
 
     _module_path: ModulePath
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
-    _values: dict[str, Any]
+    _value: Any | Missing
 
-    __slots__ = ('_local_path', '_module_path', '_objects', '_values')
+    __slots__ = '_local_path', '_module_path', '_objects', '_value'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
@@ -1262,20 +1037,25 @@ class UnknownObject:
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
                 and self._objects == other._objects
-                and self._values == other._values
+                and self._value == other._value
             )
             if isinstance(other, type(self))
             else NotImplemented
         )
 
     def __init__(
-        self, module_path: ModulePath, local_path: LocalObjectPath, /
+        self,
+        module_path: ModulePath,
+        local_path: LocalObjectPath,
+        /,
+        *,
+        value: Any | Missing,
     ) -> None:
-        self._local_path, self._module_path, self._objects, self._values = (
+        self._local_path, self._module_path, self._objects, self._value = (
             local_path,
             module_path,
             {},
-            {},
+            value,
         )
 
     def __repr__(self, /) -> str:
@@ -1337,7 +1117,5 @@ def object_get_attribute(object_: Object, name: str, /) -> Object:
     return object_.get_attribute(name)
 
 
-def object_get_mutable_attribute(
-    object_: MutableObject, name: str, /
-) -> MutableObject:
-    return object_.get_mutable_attribute(name)
+def to_object_value(object_: Object, /) -> Any | Missing:
+    return object_.value

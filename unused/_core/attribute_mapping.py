@@ -27,8 +27,21 @@ class AttributeMapping:
         assert isinstance(result, str), result
         return result
 
+    def __eq__(self, other: Any, /) -> Any:
+        return (
+            self._wrapped == other._wrapped
+            if isinstance(other, AttributeMapping)
+            else NotImplemented
+        )
+
+    def __format__(self, format_spec: str, /) -> str:
+        raise TypeError
+
     def __getattr__(self, name: str, /) -> Any:
         try:
             return self._wrapped[name]
         except KeyError:
             raise AttributeError(name) from None
+
+    def __repr__(self, /) -> str:
+        return f'{type(self).__qualname__}({self._wrapped!r})'

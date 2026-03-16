@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import functools
 from collections.abc import Iterable, Mapping, Sequence
-from itertools import chain
+from itertools import chain, repeat
 from typing import Any, TypeAlias
 
 from typing_extensions import Self
@@ -12,6 +12,7 @@ from unused._core.context import Context
 
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind
+from .missing import MISSING, Missing
 from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
@@ -77,6 +78,25 @@ ResolvedAssignmentTarget: TypeAlias = (
     | ResolvedAssignmentTargetSplitPath
     | None
 )
+
+
+def checked_combine_resolved_assignment_target_with_value(
+    target: ResolvedAssignmentTarget, value: Any, /
+) -> Iterable[tuple[ResolvedAssignmentTargetSplitPath | None, Any | Missing]]:
+    if target is None or isinstance(target, ResolvedAssignmentTargetSplitPath):
+        yield target, value
+        return
+    try:
+        value_iterator = iter(value)
+    except TypeError:
+        value_iterator = repeat(MISSING)
+    yield from chain.from_iterable(
+        map(
+            combine_resolved_assignment_target_with_value,
+            target,
+            value_iterator,
+        )
+    )
 
 
 def combine_resolved_assignment_target_with_value(
