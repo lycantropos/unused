@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import uuid
 from typing import Any, TypeAlias, TypeVar, cast, overload
 
 AnyFunctionDefinitionAstNode: TypeAlias = (
@@ -80,3 +81,7 @@ def ensure_type(
 ) -> _T:
     assert isinstance(value, cls_or_union), value
     return cast(_T, value)
+
+
+def generate_random_identifier() -> str:
+    return '__' + uuid.uuid4().hex

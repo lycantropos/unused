@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import uuid
 
 from .context import Context, FunctionCallContext
 from .enums import ObjectKind, ScopeKind
@@ -18,6 +17,7 @@ from .object_path import (
     SYS_MODULE_PATH,
 )
 from .scope import Scope
+from .utils import generate_random_identifier
 
 
 @functools.singledispatch
@@ -74,15 +74,15 @@ def _(
             value=MISSING,
         )
     if callable_object.kind is ObjectKind.METACLASS:
-        local_path = scope.local_path.join('__' + uuid.uuid4().hex)
+        local_path = scope.local_path.join(generate_random_identifier())
         return Class(
             Scope(ScopeKind.CLASS, scope.module_path, local_path),
-            metaclass=callable_object,
+            metacls=callable_object,
         )
     if callable_object.kind is ObjectKind.ROUTINE:
         from .construction import construct_object_from_expression_node
 
-        local_path = scope.local_path.join('__' + uuid.uuid4().hex)
+        local_path = scope.local_path.join(generate_random_identifier())
         return Call(
             scope.module_path,
             local_path,
@@ -179,7 +179,7 @@ def _(
         try:
             module_name = evaluate_expression_node(
                 node.slice, scope, *parent_scopes, context=context
-            )
+            ).value
         except EVALUATION_EXCEPTIONS:
             if isinstance(context, FunctionCallContext):
                 # assume that caller module is affected

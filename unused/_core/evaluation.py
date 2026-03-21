@@ -3,15 +3,40 @@ from __future__ import annotations
 import ast
 import builtins
 import functools
+import inspect
 import operator
 from collections.abc import Callable, Mapping, Sequence
+from functools import reduce
 from typing import Any, Final
 
 from .context import Context
-from .lookup import lookup_object_by_expression_node
-from .missing import MISSING
-from .object_path import BUILTINS_MODULE_PATH, LocalObjectPath, ModulePath
+from .enums import ObjectKind
+from .missing import MISSING, Missing
+from .modules import BUILTINS_MODULE, TYPES_MODULE
+from .object_ import Class, ClassObject, Instance, Object, UnknownObject
+from .object_path import (
+    BUILTINS_BOOL_LOCAL_OBJECT_PATH,
+    BUILTINS_BYTES_LOCAL_OBJECT_PATH,
+    BUILTINS_COMPLEX_LOCAL_OBJECT_PATH,
+    BUILTINS_DICT_LOCAL_OBJECT_PATH,
+    BUILTINS_FLOAT_LOCAL_OBJECT_PATH,
+    BUILTINS_FROZENSET_LOCAL_OBJECT_PATH,
+    BUILTINS_INT_LOCAL_OBJECT_PATH,
+    BUILTINS_LIST_LOCAL_OBJECT_PATH,
+    BUILTINS_MODULE_PATH,
+    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
+    BUILTINS_SET_LOCAL_OBJECT_PATH,
+    BUILTINS_SLICE_LOCAL_OBJECT_PATH,
+    BUILTINS_STR_LOCAL_OBJECT_PATH,
+    BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
+    BUILTINS_TYPE_LOCAL_OBJECT_PATH,
+    LocalObjectPath,
+    ModulePath,
+    TYPES_ELLIPSIS_TYPE_LOCAL_OBJECT_PATH,
+    TYPES_NONE_TYPE_LOCAL_OBJECT_PATH,
+)
 from .scope import Scope
+from .utils import ensure_type, generate_random_identifier
 
 EVALUATION_EXCEPTIONS: Final = (
     AttributeError,
@@ -25,11 +50,11 @@ EVALUATION_EXCEPTIONS: Final = (
 @functools.singledispatch
 def evaluate_expression_node(
     node: ast.expr,
-    scope: Scope,  # noqa: ARG001
+    _scope: Scope,
     /,
-    *parent_scopes: Scope,  # noqa: ARG001
+    *_parent_scopes: Scope,
     context: Context,  # noqa: ARG001
-) -> Any:
+) -> Object:
     raise TypeError(type(node))
 
 
@@ -40,13 +65,10 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
-) -> Any:
-    return getattr(
-        evaluate_expression_node(
-            node.value, scope, *parent_scopes, context=context
-        ),
-        node.attr,
-    )
+) -> Object:
+    return evaluate_expression_node(
+        node.value, scope, *parent_scopes, context=context
+    ).get_attribute(node.attr)
 
 
 @evaluate_expression_node.register(ast.JoinedStr)
@@ -56,12 +78,16 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
-) -> Any:
-    return ''.join(
-        evaluate_expression_node(
-            value_node, scope, *parent_scopes, context=context
-        )
-        for value_node in node.values
+) -> Object:
+    return value_to_object(
+        ''.join(
+            evaluate_expression_node(
+                value_node, scope, *parent_scopes, context=context
+            ).value
+            for value_node in node.values
+        ),
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
     )
 
 
@@ -72,103 +98,284 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
-) -> Any:
+) -> Object:
     value = evaluate_expression_node(
         node.value, scope, *parent_scopes, context=context
-    )
+    ).value
     if node.conversion == ord('r'):
         value = repr(value)
     elif node.conversion == ord('s'):
         value = str(value)
     elif node.conversion == ord('a'):
         value = ascii(value)
-    return (
-        format(
-            value,
-            evaluate_expression_node(
-                node.format_spec, scope, *parent_scopes, context=context
-            ),
-        )
-        if node.format_spec is not None
-        else format(value)
+    return value_to_object(
+        (
+            format(
+                value,
+                evaluate_expression_node(
+                    node.format_spec, scope, *parent_scopes, context=context
+                ).value,
+            )
+            if node.format_spec is not None
+            else format(value)
+        ),
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
     )
 
 
-_ALLOWED_CALLABLES: Final[
-    Mapping[tuple[ModulePath, LocalObjectPath], Callable[..., Any]]
-] = {
-    (
-        BUILTINS_MODULE_PATH,
-        LocalObjectPath.from_object_name(callable_.__qualname__),
-    ): callable_
-    for callable_ in (
-        builtins.getattr,
-        builtins.hasattr,
-        builtins.isinstance,
-        builtins.issubclass,
-        builtins.len,
-    )
-}
+BUILTINS_GETATTR_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.getattr.__qualname__
+)
+BUILTINS_HASATTR_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.hasattr.__qualname__
+)
+BUILTINS_ISINSTANCE_LOCAL_OBJECT_PATH: Final = (
+    LocalObjectPath.from_object_name(builtins.isinstance.__qualname__)
+)
+BUILTINS_ISSUBCLASS_LOCAL_OBJECT_PATH: Final = (
+    LocalObjectPath.from_object_name(builtins.issubclass.__qualname__)
+)
+BUILTINS_LEN_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.len.__qualname__
+)
 
 
 @evaluate_expression_node.register(ast.Call)
 def _(
     node: ast.Call, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> Any:
-    try:
-        callable_ = evaluate_expression_node(
-            node.func, scope, *parent_scopes, context=context
-        )
-    except EVALUATION_EXCEPTIONS:
-        callable_object = lookup_object_by_expression_node(
-            node.func, scope, *parent_scopes, context=context
-        )
-        if callable_object is None:
-            raise
-        callable_ = _ALLOWED_CALLABLES.get(
-            (callable_object.module_path, callable_object.local_path)
-        )
-        if callable_ is None:
-            raise
-    args: list[Any] = []
+) -> Object:
+    callable_object = evaluate_expression_node(
+        node.func, scope, *parent_scopes, context=context
+    )
+    positional_argument_objects: list[tuple[bool, Object]] = []
+    routine_object: Object
+    if callable_object.kind is ObjectKind.METHOD:
+        positional_argument_objects.append((False, callable_object.instance))
+        routine_object = callable_object.routine
+    else:
+        routine_object = callable_object
     for positional_argument_node in node.args:
         if isinstance(positional_argument_node, ast.Starred):
-            args.extend(
-                evaluate_expression_node(
-                    positional_argument_node.value,
-                    scope,
-                    *parent_scopes,
-                    context=context,
+            positional_argument_objects.append(
+                (
+                    True,
+                    evaluate_expression_node(
+                        positional_argument_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ),
                 )
             )
         else:
-            args.append(
-                evaluate_expression_node(
-                    positional_argument_node,
-                    scope,
-                    *parent_scopes,
-                    context=context,
+            positional_argument_objects.append(
+                (
+                    False,
+                    evaluate_expression_node(
+                        positional_argument_node,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ),
                 )
             )
-    kwargs: dict[str, Any] = {}
+    keyword_argument_objects: list[tuple[str | None, Object]] = []
     for keyword_argument_node in node.keywords:
         if (parameter_name := keyword_argument_node.arg) is not None:
-            kwargs[parameter_name] = evaluate_expression_node(
-                keyword_argument_node.value,
-                scope,
-                *parent_scopes,
-                context=context,
-            )
-        else:
-            kwargs.update(
-                evaluate_expression_node(
-                    keyword_argument_node.value,
-                    scope,
-                    *parent_scopes,
-                    context=context,
+            keyword_argument_objects.append(
+                (
+                    parameter_name,
+                    evaluate_expression_node(
+                        keyword_argument_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ),
                 )
             )
-    return callable_(*args, **kwargs)
+        else:
+            keyword_argument_objects.append(
+                (
+                    None,
+                    evaluate_expression_node(
+                        keyword_argument_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ),
+                )
+            )
+    if routine_object.module_path == BUILTINS_MODULE_PATH:
+        if routine_object.local_path == BUILTINS_HASATTR_LOCAL_OBJECT_PATH:
+            (
+                (subject_is_variadic, subject),
+                (attribute_name_object_is_variadic, attribute_name_object),
+            ) = positional_argument_objects
+            if (
+                len(keyword_argument_objects) > 0
+                or subject_is_variadic
+                or attribute_name_object_is_variadic
+            ):
+                raise TypeError(ast.unparse(node))
+            attribute_name = attribute_name_object.value
+            if not isinstance(attribute_name, str):
+                raise TypeError(ast.unparse(node))
+            try:
+                subject.strict_get_attribute(attribute_name)
+            except KeyError:
+                value = False
+            else:
+                value = True
+            return value_to_object(
+                value,
+                module_path=scope.module_path,
+                local_path=scope.local_path.join(generate_random_identifier()),
+            )
+        if routine_object.local_path == BUILTINS_ISINSTANCE_LOCAL_OBJECT_PATH:
+            (
+                (subject_is_variadic, subject),
+                (cls_or_tuple_is_variadic, cls_or_tuple),
+            ) = positional_argument_objects
+            if (
+                len(keyword_argument_objects) > 0
+                or subject_is_variadic
+                or cls_or_tuple_is_variadic
+                or subject.kind is not ObjectKind.INSTANCE
+                or cls_or_tuple.kind is not ObjectKind.CLASS
+            ):
+                raise TypeError(ast.unparse(node))
+            subject_cls = subject.cls
+            if subject_cls.kind is not ObjectKind.CLASS:
+                raise TypeError(ast.unparse(node))
+            return value_to_object(
+                any(
+                    parent_cls is cls_or_tuple
+                    for parent_cls in cls_to_mro(subject_cls)
+                ),
+                module_path=scope.module_path,
+                local_path=scope.local_path.join(generate_random_identifier()),
+            )
+        if routine_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH:
+            if (
+                len(positional_argument_objects) != 1
+                or len(keyword_argument_objects) > 0
+            ):
+                raise TypeError(ast.unparse(node))
+            ((subject_is_variadic, subject),) = positional_argument_objects
+            if not subject_is_variadic:
+                if (
+                    subject.kind is ObjectKind.CLASS
+                    and (metacls := subject.metacls) is not MISSING
+                ):
+                    return metacls
+                if subject.kind is ObjectKind.INSTANCE:
+                    return subject.cls
+            raise TypeError(ast.unparse(node))
+        routine = None
+        if (
+            routine_object.local_path.starts_with(
+                BUILTINS_BYTES_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_COMPLEX_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_DICT_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_FLOAT_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_FROZENSET_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_INT_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path == BUILTINS_LEN_LOCAL_OBJECT_PATH
+            or routine_object.local_path.starts_with(
+                BUILTINS_LIST_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_SET_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_STR_LOCAL_OBJECT_PATH
+            )
+            or routine_object.local_path.starts_with(
+                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+            )
+        ):
+            routine = reduce(
+                getattr, routine_object.local_path.components, builtins
+            )
+        if routine is None:
+            raise TypeError(ast.unparse(node))
+        assert not inspect.ismodule(routine), routine
+        positional_arguments: list[Any] = []
+        for (
+            positional_argument_is_variadic,
+            positional_argument_object,
+        ) in positional_argument_objects:
+            if positional_argument_is_variadic:
+                positional_arguments.extend(
+                    [*positional_argument_object.value]
+                )
+            else:
+                positional_arguments.append(positional_argument_object.value)
+        keyword_arguments: dict[Any, Any] = {}
+        for (
+            keyword_argument_name,
+            keyword_argument_object,
+        ) in keyword_argument_objects:
+            if keyword_argument_name is None:
+                keyword_arguments.update({**keyword_argument_object.value})
+            else:
+                keyword_arguments[keyword_argument_name] = (
+                    keyword_argument_object.value
+                )
+        return value_to_object(
+            routine(*positional_arguments, **keyword_arguments),  # pyright: ignore[reportCallIssue]
+            module_path=scope.module_path,
+            local_path=scope.local_path.join(generate_random_identifier()),
+        )
+    raise TypeError(ast.unparse(node))
+
+
+def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
+    if cls.kind is not ObjectKind.CLASS:
+        raise TypeError(cls.kind)
+    result = [cls]
+    if (
+        cls.module_path == BUILTINS_MODULE_PATH
+        and cls.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+    ):
+        return result
+    parent_chains: list[Sequence[Any]] = [
+        cls_to_mro(base_cls) for base_cls in cls.bases
+    ]
+    parent_chains.append([*cls.bases])
+    while parent_chains:
+        next_parent = None
+        for parent_chain in parent_chains:
+            candidate = parent_chain[0]
+            if not any(candidate in chain[1:] for chain in parent_chains):
+                next_parent = candidate
+                break
+        if next_parent is None:
+            raise TypeError('MRO resolution error.')
+        if next_parent.kind is not ObjectKind.CLASS:
+            raise TypeError(next_parent.kind)
+        result.append(next_parent)
+        parent_chains = [
+            new_chain
+            for chain in parent_chains
+            if len(
+                new_chain := (chain[1:] if chain[0] is next_parent else chain)
+            )
+            > 0
+        ]
+    return result
 
 
 _binary_operators_by_operator_type: Mapping[
@@ -194,13 +401,17 @@ _binary_operators_by_operator_type: Mapping[
 def _(
     node: ast.BinOp, scope: Scope, /, *parent_scopes: Scope, context: Context
 ) -> Any:
-    return _binary_operators_by_operator_type[type(node.op)](
-        evaluate_expression_node(
-            node.left, scope, *parent_scopes, context=context
+    return value_to_object(
+        _binary_operators_by_operator_type[type(node.op)](
+            evaluate_expression_node(
+                node.left, scope, *parent_scopes, context=context
+            ).value,
+            evaluate_expression_node(
+                node.right, scope, *parent_scopes, context=context
+            ).value,
         ),
-        evaluate_expression_node(
-            node.right, scope, *parent_scopes, context=context
-        ),
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
     )
 
 
@@ -217,7 +428,7 @@ def _(
                     candidate := evaluate_expression_node(
                         value_node, scope, *parent_scopes, context=context
                     )
-                )
+                ).value
             )
         except StopIteration:
             return evaluate_expression_node(
@@ -232,7 +443,7 @@ def _(
                 candidate := evaluate_expression_node(
                     value_node, scope, *parent_scopes, context=context
                 )
-            )
+            ).value
         )
     except StopIteration:
         return evaluate_expression_node(
@@ -259,16 +470,16 @@ _binary_comparison_operators_by_operator_node_type: Mapping[
 @evaluate_expression_node.register(ast.Compare)
 def _(
     node: ast.Compare, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> bool:
+) -> Object:
     value = evaluate_expression_node(
         node.left, scope, *parent_scopes, context=context
-    )
+    ).value
     for operator_node, next_value in zip(
         node.ops,
         (
             evaluate_expression_node(
                 operand_node, scope, *parent_scopes, context=context
-            )
+            ).value
             for operand_node in node.comparators
         ),
         strict=True,
@@ -276,60 +487,100 @@ def _(
         if not _binary_comparison_operators_by_operator_node_type[
             type(operator_node)
         ](value, next_value):
-            return False
+            return value_to_object(
+                False,  # noqa: FBT003
+                module_path=scope.module_path,
+                local_path=scope.local_path.join(generate_random_identifier()),
+            )
         value = next_value
-    return True
+    return value_to_object(
+        True,  # noqa: FBT003
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
+    )
 
 
 @evaluate_expression_node.register(ast.Constant)
 def _(
     node: ast.Constant,
-    scope: Scope,  # noqa: ARG001
+    scope: Scope,
     /,
     *parent_scopes: Scope,  # noqa: ARG001
     context: Context,  # noqa: ARG001
-) -> Any:
-    return node.value
+) -> Object:
+    return value_to_object(
+        node.value,
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
+    )
 
 
 @evaluate_expression_node.register(ast.Dict)
 def _(
     node: ast.Dict, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> Any:
-    result: dict[Any, Any] = {}
-    for key_node, value_node in zip(node.keys, node.values, strict=True):
-        value = evaluate_expression_node(
-            value_node, scope, *parent_scopes, context=context
-        )
-        if key_node is None:
-            result.update(**value)
+) -> Object:
+    value: dict[Any, Any] = {}
+    for item_key_node, item_value_node in zip(
+        node.keys, node.values, strict=True
+    ):
+        item_value = evaluate_expression_node(
+            item_value_node, scope, *parent_scopes, context=context
+        ).value
+        if item_key_node is None:
+            value.update({**item_value})
         else:
-            key = evaluate_expression_node(
-                key_node, scope, *parent_scopes, context=context
-            )
-            result[key] = value
-    return result
+            value[
+                evaluate_expression_node(
+                    item_key_node, scope, *parent_scopes, context=context
+                ).value
+            ] = item_value
+    return Instance(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_DICT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        value=value,
+    )
 
 
 @evaluate_expression_node.register(ast.List)
 def _(
     node: ast.List, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> list[Any]:
-    result = []
+) -> Object:
+    value = []
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
-            result.extend(
-                evaluate_expression_node(
-                    element_node.value, scope, *parent_scopes, context=context
-                )
+            value.extend(
+                [
+                    *evaluate_expression_node(
+                        element_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ).value
+                ]
             )
         else:
-            result.append(
+            value.append(
                 evaluate_expression_node(
                     element_node, scope, *parent_scopes, context=context
-                )
+                ).value
             )
-    return result
+    return Instance(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_LIST_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        value=value,
+    )
 
 
 @evaluate_expression_node.register(ast.Name)
@@ -339,42 +590,53 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,  # noqa: ARG001
-) -> Any:
+) -> Object:
     name = node.id
     try:
-        object_ = scope.get_object(name)
+        return scope.get_object(name)
     except KeyError:
         for parent_scope in parent_scopes:
             try:
-                object_ = parent_scope.get_object(name)
+                return parent_scope.get_object(name)
             except KeyError:
                 continue
-            else:
-                return object_.value
         raise NameError(name) from None
-    else:
-        return object_.value
 
 
 @evaluate_expression_node.register(ast.Set)
 def _(
     node: ast.Set, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> Any:
-    result = set()
+) -> Object:
+    value = set()
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
-            result.update(
-                evaluate_expression_node(
-                    element_node.value, scope, *parent_scopes, context=context
-                )
+            value.update(
+                [
+                    *evaluate_expression_node(
+                        element_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ).value
+                ]
             )
         else:
-            result.add(
+            value.add(
                 evaluate_expression_node(
                     element_node, scope, *parent_scopes, context=context
-                )
+                ).value
             )
-    return result
+    return Instance(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_SET_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        value=value,
+    )
 
 
 @evaluate_expression_node.register(ast.Subscript)
@@ -384,63 +646,92 @@ def _(
     /,
     *parent_scopes: Scope,
     context: Context,
-) -> Any:
-    return evaluate_expression_node(
-        node.value, scope, *parent_scopes, context=context
-    )[
+) -> Object:
+    return value_to_object(
         evaluate_expression_node(
-            node.slice, scope, *parent_scopes, context=context
-        )
-    ]
+            node.value, scope, *parent_scopes, context=context
+        ).value[
+            evaluate_expression_node(
+                node.slice, scope, *parent_scopes, context=context
+            ).value
+        ],
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
+    )
 
 
 @evaluate_expression_node.register(ast.Slice)
 def _(
     node: ast.Slice, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> Any:
+) -> Object:
     start = (
         evaluate_expression_node(
             start_node, scope, *parent_scopes, context=context
-        )
+        ).value
         if (start_node := node.lower) is not None
         else None
     )
     stop = (
         evaluate_expression_node(
             stop_node, scope, *parent_scopes, context=context
-        )
+        ).value
         if (stop_node := node.upper) is not None
         else None
     )
     step = (
         evaluate_expression_node(
             step_node, scope, *parent_scopes, context=context
-        )
+        ).value
         if (step_node := node.step) is not None
         else None
     )
-    return slice(start, stop, step)
+    return Instance(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_SLICE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        value=slice(start, stop, step),
+    )
 
 
 @evaluate_expression_node.register(ast.Tuple)
 def _(
     node: ast.Tuple, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> tuple[Any, ...]:
-    result = []
+) -> Object:
+    value = []
     for element_node in node.elts:
         if isinstance(element_node, ast.Starred):
-            result.extend(
-                evaluate_expression_node(
-                    element_node.value, scope, *parent_scopes, context=context
-                )
+            value.extend(
+                [
+                    *evaluate_expression_node(
+                        element_node.value,
+                        scope,
+                        *parent_scopes,
+                        context=context,
+                    ).value
+                ]
             )
         else:
-            result.append(
+            value.append(
                 evaluate_expression_node(
                     element_node, scope, *parent_scopes, context=context
-                )
+                ).value
             )
-    return tuple(result)
+    return Instance(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        cls=ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        ),
+        value=tuple(value),
+    )
 
 
 _unary_operators_by_operator_type: Mapping[
@@ -456,11 +747,15 @@ _unary_operators_by_operator_type: Mapping[
 @evaluate_expression_node.register(ast.UnaryOp)
 def _(
     node: ast.UnaryOp, scope: Scope, /, *parent_scopes: Scope, context: Context
-) -> Any:
-    return _unary_operators_by_operator_type[type(node.op)](
-        evaluate_expression_node(
-            node.operand, scope, *parent_scopes, context=context
-        )
+) -> Object:
+    return value_to_object(
+        _unary_operators_by_operator_type[type(node.op)](
+            evaluate_expression_node(
+                node.operand, scope, *parent_scopes, context=context
+            ).value
+        ),
+        module_path=scope.module_path,
+        local_path=scope.local_path.join(generate_random_identifier()),
     )
 
 
@@ -480,7 +775,7 @@ def function_node_to_keyword_only_defaults(
         try:
             keyword_only_default_value = evaluate_expression_node(
                 keyword_default_node, scope, *parent_scopes, context=context
-            )
+            ).value
         except EVALUATION_EXCEPTIONS:
             keyword_only_default_value = MISSING
         result[keyword_parameter_node.arg] = keyword_only_default_value
@@ -499,8 +794,128 @@ def function_node_to_positional_defaults(
         try:
             positional_default_value = evaluate_expression_node(
                 positional_default_node, scope, *parent_scopes, context=context
-            )
+            ).value
         except EVALUATION_EXCEPTIONS:
             positional_default_value = MISSING
         result.append(positional_default_value)
     return result
+
+
+def value_to_object(
+    value: Any | Missing,
+    /,
+    *,
+    module_path: ModulePath,
+    local_path: LocalObjectPath,
+) -> Instance | UnknownObject:
+    return (
+        Instance(module_path, local_path, cls=cls, value=value)
+        if (
+            value is not MISSING
+            and (cls := _value_to_cls_object(value)) is not None
+        )
+        else UnknownObject(module_path, local_path, value=value)
+    )
+
+
+def _value_to_cls_object(value: Any, /) -> Class | None:
+    value_cls = type(value)
+    if value_cls is bool:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_BOOL_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is bytes:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_BYTES_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is complex:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_COMPLEX_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is float:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_FLOAT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is int:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_INT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is str:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_STR_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is None:
+        return ensure_type(
+            TYPES_MODULE.get_nested_attribute(
+                TYPES_NONE_TYPE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is Ellipsis:
+        return ensure_type(
+            TYPES_MODULE.get_nested_attribute(
+                TYPES_ELLIPSIS_TYPE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is dict:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_DICT_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is frozenset:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_FROZENSET_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is list:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_LIST_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value_cls is set:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_SET_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is slice:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_SLICE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    if value is tuple:
+        return ensure_type(
+            BUILTINS_MODULE.get_nested_attribute(
+                BUILTINS_TUPLE_LOCAL_OBJECT_PATH
+            ),
+            Class,
+        )
+    return None

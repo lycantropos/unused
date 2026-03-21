@@ -237,7 +237,7 @@ def _(
         try:
             module_name = evaluate_expression_node(
                 node.slice, scope, *parent_scopes, context=context
-            )
+            ).value
         except EVALUATION_EXCEPTIONS:
             return None
         else:
@@ -255,7 +255,7 @@ def _(
     try:
         slice_value = evaluate_expression_node(
             node.slice, scope, *parent_scopes, context=context
-        )
+        ).value
     except EVALUATION_EXCEPTIONS:
         return None
     assert isinstance(slice_value, str), ast.unparse(node)

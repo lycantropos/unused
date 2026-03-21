@@ -882,13 +882,13 @@ def _parse_modules(
                                         f'__base_{len(origin_base_cls_paths) - 1}__'  # noqa: E501
                                     ),
                                 ),
-                                metaclass=MISSING,
+                                metacls=MISSING,
                             ),
                         )
                         if has_unknown_base
                         else ()
                     ),
-                    metaclass=(
+                    metacls=(
                         ensure_type(
                             _path_to_object_or_unknown(
                                 result, metacls_paths[value_path]
@@ -2226,10 +2226,8 @@ FILE_PATH_MODULE_PATHS: Final[Mapping[Path, Sequence[ModulePath]]] = (
 MODULES: Final[MutableMapping[ModulePath, MutableObject]] = _parse_modules(
     builtins, sys, types
 )
-BUILTINS_MODULE: Final[Module] = ensure_type(
-    MODULES[BUILTINS_MODULE_PATH], Module
-)
-TYPES_MODULE: Final[Object] = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
+BUILTINS_MODULE: Final = ensure_type(MODULES[BUILTINS_MODULE_PATH], Module)
+TYPES_MODULE: Final = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
 Method.BASE_CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH),
     Class,

@@ -14,10 +14,7 @@ from typing import (
     get_args,
 )
 
-from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
-from .mapped_mapping import MappedMapping
-from .mapping_chain import MappingChain
 from .missing import MISSING, Missing
 from .object_path import (
     CLASS_FIELD_NAME,
@@ -36,6 +33,10 @@ _T = TypeVar('_T')
 
 class Class:
     @property
+    def bases(self, /) -> Sequence[ClassObject]:
+        return self._bases
+
+    @property
     def kind(self, /) -> ClassObjectKind:
         if self._scope.kind is ScopeKind.CLASS:
             return ObjectKind.CLASS
@@ -49,23 +50,16 @@ class Class:
         return self._scope.local_path
 
     @property
+    def metacls(self, /) -> ClassObject | Missing:
+        return self._metacls
+
+    @property
     def module_path(self, /) -> ModulePath:
         return self._scope.module_path
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(
-                to_object_value,
-                MappingChain(
-                    self._objects,
-                    *[
-                        base._objects  # noqa: SLF001
-                        for base in self._bases
-                    ],
-                ),
-            )
-        )
+    def value(self, /) -> Any:
+        raise NameError(self._scope.local_path.components[-1])
 
     def get_attribute(self, name: str, /) -> Object:
         try:
@@ -80,7 +74,7 @@ class Class:
                     return base.get_attribute(name)
                 except KeyError:
                     continue
-            if (metaclass := self._metaclass) is not MISSING:
+            if (metaclass := self._metacls) is not MISSING:
                 assert self.kind is ObjectKind.CLASS, self
                 try:
                     candidate = metaclass.get_attribute(name)
@@ -147,23 +141,19 @@ class Class:
                         return base.strict_get_attribute(name)
                     except KeyError:
                         continue
-                if (metaclass := self._metaclass) is not MISSING:
+                if (metaclass := self._metacls) is not MISSING:
                     try:
                         return metaclass.strict_get_attribute(name)
                     except KeyError:
                         pass
             raise
 
-    @property
-    def _objects(self, /) -> Mapping[str, Object]:
-        return self._scope._objects  # noqa: SLF001
-
     _attributes: dict[str, Object]
     _bases: Sequence[ClassObject]
-    _metaclass: ClassObject | Missing
+    _metacls: ClassObject | Missing
     _scope: Scope
 
-    __slots__ = '_attributes', '_bases', '_metaclass', '_scope'
+    __slots__ = '_attributes', '_bases', '_metacls', '_scope'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
@@ -171,7 +161,7 @@ class Class:
                 self._attributes == other._attributes
                 and self._scope == other._scope
                 and self._bases == other._bases
-                and self._metaclass == other._metaclass
+                and self._metacls == other._metacls
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -182,7 +172,7 @@ class Class:
         scope: Scope,
         /,
         *bases: ClassObject,
-        metaclass: ClassObject | Missing,
+        metacls: ClassObject | Missing,
     ) -> None:
         assert scope.kind in CLASS_SCOPE_KINDS, scope
         assert [
@@ -190,10 +180,10 @@ class Class:
             for base_index, base in enumerate(bases)
             if base.kind in (ObjectKind.UNKNOWN, ObjectKind.UNKNOWN_CLASS)
         ] <= [len(bases) - 1]
-        self._attributes, self._bases, self._metaclass, self._scope = (
+        self._attributes, self._bases, self._metacls, self._scope = (
             {},
             bases,
-            metaclass,
+            metacls,
             scope,
         )
 
@@ -203,12 +193,16 @@ class Class:
             f'{self._scope!r}'
             f'{", " * bool(self._bases)}'
             f'{", ".join(map(repr, self._bases))}, '
-            f'metaclass={self._metaclass}'
+            f'metaclass={self._metacls}'
             ')'
         )
 
 
 class Instance:
+    @property
+    def cls(self, /) -> Class | UnknownObject:
+        return self._cls
+
     @property
     def kind(self, /) -> Literal[ObjectKind.INSTANCE]:
         return ObjectKind.INSTANCE
@@ -226,10 +220,6 @@ class Instance:
         if self._value is MISSING:
             raise NameError(self._local_path.components[-1])
         return self._value
-
-    @value.setter
-    def value(self, value: Any | Missing, /) -> None:
-        self._value = value
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -364,10 +354,8 @@ class Call:
         return self._module_path
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(to_object_value, MappingChain(self._objects))
-        )
+    def value(self, /) -> Any:
+        raise NameError(self._local_path.components[-1])
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -499,16 +487,8 @@ class Method:
         return self._routine
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(
-                to_object_value,
-                MappingChain(
-                    self._objects,
-                    self.BASE_CLS._objects,  # noqa: SLF001
-                ),
-            )
-        )
+    def value(self, /) -> Any:
+        raise NameError(self.local_path.components[-1])
 
     def get_attribute(self, name: str, /) -> Object:
         return self.strict_get_attribute(name)
@@ -594,19 +574,8 @@ class Routine:
         return self._module_path
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(
-                to_object_value,
-                MappingChain(
-                    self._objects,
-                    *[
-                        base_cls._objects  # noqa: SLF001
-                        for base_cls in self._base_classes
-                    ],
-                ),
-            )
-        )
+    def value(self, /) -> Any:
+        raise NameError(self._local_path.components[-1])
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -746,18 +715,8 @@ class Descriptor:
         return self._module_path
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(
-                to_object_value,
-                MappingChain(
-                    *[
-                        base_cls._objects  # noqa: SLF001
-                        for base_cls in self._base_classes
-                    ]
-                ),
-            )
-        )
+    def value(self, /) -> Any:
+        raise NameError(self._local_path.components[-1])
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -795,7 +754,6 @@ class Descriptor:
     _base_classes: Sequence[Class | UnknownObject]
     _local_path: LocalObjectPath
     _module_path: ModulePath
-    _objects: dict[str, Object]
 
     __slots__ = '_ast_node', '_base_classes', '_local_path', '_module_path'
 
@@ -869,8 +827,8 @@ class Module:
         return self._scope
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return self._scope.value
+    def value(self, /) -> Any:
+        raise NameError(self.local_path.components[-1])
 
     def get_attribute(self, name: str, /) -> Object:
         if name == CLASS_FIELD_NAME:
@@ -935,10 +893,6 @@ class Module:
     def strict_get_attribute(self, name: str, /) -> Object:
         return self._scope.strict_get_object(name)
 
-    @property
-    def _objects(self, /) -> Mapping[str, Object]:
-        return self._scope._objects  # noqa: SLF001
-
     _scope: Scope
 
     __slots__ = ('_scope',)
@@ -975,10 +929,6 @@ class UnknownObject:
         if self._value is MISSING:
             raise NameError(self._local_path.components[-1])
         return self._value
-
-    @value.setter
-    def value(self, value: Any | Missing, /) -> None:
-        self._value = value
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -1066,33 +1016,33 @@ class UnknownObject:
         )
 
 
-ClassObject: TypeAlias = Class | Instance | Routine | Call | UnknownObject
-CLASS_OBJECT_CLASSES: Final = (Class, Instance, Routine, Call, UnknownObject)
+ClassObject: TypeAlias = Call | Class | Instance | Routine | UnknownObject
+CLASS_OBJECT_CLASSES: Final = (Call, Class, Instance, Routine, UnknownObject)
 assert get_args(ClassObject) == CLASS_OBJECT_CLASSES
 MutableObject: TypeAlias = (
-    Class | Module | Instance | Routine | Call | UnknownObject
+    Call | Class | Instance | Module | Routine | UnknownObject
 )
 MUTABLE_OBJECT_CLASSES: Final = (
-    Class,
-    Module,
-    Instance,
-    Routine,
     Call,
+    Class,
+    Instance,
+    Module,
+    Routine,
     UnknownObject,
 )
 assert get_args(MutableObject) == MUTABLE_OBJECT_CLASSES
 ImmutableObject: TypeAlias = Descriptor | Method
 Object: TypeAlias = ImmutableObject | MutableObject
 CallableObject: TypeAlias = (
-    Class | Descriptor | Instance | Routine | Call | Method | UnknownObject
+    Call | Class | Descriptor | Instance | Method | Routine | UnknownObject
 )
 CALLABLE_OBJECT_CLASSES: Final = (
+    Call,
     Class,
     Descriptor,
     Instance,
-    Routine,
-    Call,
     Method,
+    Routine,
     UnknownObject,
 )
 assert get_args(CallableObject) == CALLABLE_OBJECT_CLASSES
@@ -1117,5 +1067,5 @@ def object_get_attribute(object_: Object, name: str, /) -> Object:
     return object_.get_attribute(name)
 
 
-def to_object_value(object_: Object, /) -> Any | Missing:
+def to_object_value(object_: Object, /) -> Any:
     return object_.value

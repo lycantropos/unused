@@ -14,10 +14,7 @@ from typing import Any, Final
 
 from typing_extensions import override
 
-from .construction import (
-    construct_object_from_expression_node,
-    value_to_object,
-)
+from .construction import construct_object_from_expression_node
 from .context import Context, FunctionCallContext, NullContext
 from .enums import ObjectKind, ScopeKind
 from .evaluation import (
@@ -25,6 +22,7 @@ from .evaluation import (
     evaluate_expression_node,
     function_node_to_keyword_only_defaults,
     function_node_to_positional_defaults,
+    value_to_object,
 )
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
@@ -147,10 +145,12 @@ def _does_function_modify_caller_global_state(
             positional_parameter_name = positional_parameter_node.arg
             function_scope.set_object(
                 positional_parameter_name,
-                UnknownObject(
-                    function_object.module_path,
-                    function_object.local_path.join(positional_parameter_name),
-                    value=positional_argument,
+                value_to_object(
+                    positional_argument,
+                    module_path=function_object.module_path,
+                    local_path=function_object.local_path.join(
+                        positional_parameter_name
+                    ),
                 ),
             )
         positional_defaults = function_object.get_attribute(
@@ -170,12 +170,12 @@ def _does_function_modify_caller_global_state(
             )
             function_scope.set_object(
                 defaulted_positional_parameter_name,
-                UnknownObject(
-                    function_object.module_path,
-                    function_object.local_path.join(
+                value_to_object(
+                    positional_default,
+                    module_path=function_object.module_path,
+                    local_path=function_object.local_path.join(
                         defaulted_positional_parameter_name
                     ),
-                    value=positional_default,
                 ),
             )
         keyword_only_defaults = function_object.get_attribute(
@@ -196,10 +196,12 @@ def _does_function_modify_caller_global_state(
                 ]
             function_scope.set_object(
                 keyword_parameter_name,
-                UnknownObject(
-                    function_object.module_path,
-                    function_object.local_path.join(keyword_parameter_name),
-                    value=keyword_argument,
+                value_to_object(
+                    keyword_argument,
+                    module_path=function_object.module_path,
+                    local_path=function_object.local_path.join(
+                        keyword_parameter_name
+                    ),
                 ),
             )
         if (
@@ -512,7 +514,7 @@ class ScopeParser(ast.NodeVisitor):
                 if len(node.bases) == 0
                 else base_cls_objects
             ),
-            metaclass=metacls_object,
+            metacls=metacls_object,
         )
         cls_object.set_attribute(
             DICT_FIELD_NAME,
@@ -612,7 +614,7 @@ class ScopeParser(ast.NodeVisitor):
                             *self._to_complete_positional_arguments(
                                 [], decorator_object
                             ),
-                            cls_scope.value,
+                            MISSING,
                         ],
                     )
                     and (
@@ -1020,7 +1022,7 @@ class ScopeParser(ast.NodeVisitor):
     def _evaluate_expression_node(self, node: ast.expr, /) -> Any:
         return evaluate_expression_node(
             node, self._scope, *self._parent_scopes, context=self._context
-        )
+        ).value
 
     def _get_inherited_scopes(self, /) -> Sequence[Scope]:
         result = (
@@ -1085,10 +1087,10 @@ class ScopeParser(ast.NodeVisitor):
                     if isinstance(
                         resolved_target, ResolvedAssignmentTargetSplitPath
                     )
-                    else UnknownObject(
-                        target_object_split_path.module,
-                        target_object_split_path.combine_local(),
-                        value=sub_value,
+                    else value_to_object(
+                        sub_value,
+                        module_path=target_object_split_path.module,
+                        local_path=target_object_split_path.combine_local(),
                     )
                 ),
             )
@@ -1387,9 +1389,6 @@ def resolve_module_path(
             except KeyError:
                 raise error from None
         else:
-            assert _is_package_module_path(
-                result.module_path, module_file_paths=module_file_paths
-            ), module_path
             result.set_attribute(component, next_result)
             result = next_result
     return result

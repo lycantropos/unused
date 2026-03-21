@@ -6,8 +6,8 @@ from typing import Any, TypeVar
 from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind, ScopeKind
 from .mapped_mapping import MappedMapping
-from .mapping_chain import MappingChain
 from .missing import MISSING
+from .namespace_chain import NamespaceChain
 from .object_ import (
     MUTABLE_OBJECT_CLASSES,
     MutableObject,
@@ -36,18 +36,13 @@ class Scope:
         return self._local_path
 
     @property
-    def value(self, /) -> AttributeMapping:
-        return AttributeMapping(
-            MappedMapping(
-                to_object_value,
-                MappingChain(
-                    self._objects,
-                    *[
-                        included_object._objects  # noqa: SLF001
-                        for included_object in self._included_objects
-                    ],
-                ),
-            )
+    def value(self, /) -> Any:
+        return NamespaceChain(
+            AttributeMapping(MappedMapping(to_object_value, self._objects)),
+            *[
+                included_object.value
+                for included_object in self._included_objects
+            ],
         )
 
     def delete_object(self, name: str, /) -> None:

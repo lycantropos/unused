@@ -171,19 +171,18 @@ def _is_object_path_component_valid(component: str, /) -> bool:
     )
 
 
-BUILTINS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
-    builtins.__name__
-)
-COLLECTIONS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
+BUILTINS_MODULE_PATH: Final = ModulePath.from_module_name(builtins.__name__)
+assert sys.modules[BUILTINS_MODULE_PATH.to_module_name()] is builtins
+COLLECTIONS_MODULE_PATH: Final = ModulePath.from_module_name(
     collections.__name__
 )
-SYS_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(sys.__name__)
-TYPES_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
-    types.__name__
-)
-TYPING_MODULE_PATH: Final[ModulePath] = ModulePath.from_module_name(
-    typing.__name__
-)
+assert sys.modules[COLLECTIONS_MODULE_PATH.to_module_name()] is collections
+SYS_MODULE_PATH: Final = ModulePath.from_module_name(sys.__name__)
+assert sys.modules[SYS_MODULE_PATH.to_module_name()] is sys
+TYPES_MODULE_PATH: Final = ModulePath.from_module_name(types.__name__)
+assert sys.modules[TYPES_MODULE_PATH.to_module_name()] is types
+TYPING_MODULE_PATH: Final = ModulePath.from_module_name(typing.__name__)
+assert sys.modules[TYPING_MODULE_PATH.to_module_name()] is typing
 
 DICT_FIELD_NAME: Final = '__dict__'
 NAME_FIELD_NAME: Final = '__name__'
@@ -196,36 +195,44 @@ def _search_local_path(
     return functools.reduce(builtins.getattr, local_path.components, module)
 
 
-BUILTINS_BOOL_LOCAL_OBJECT_PATH: Final = LocalObjectPath('bool')
+BUILTINS_BOOL_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.bool.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_BOOL_LOCAL_OBJECT_PATH, builtins)
     is builtins.bool
 )
-BUILTINS_BYTES_LOCAL_OBJECT_PATH: Final = LocalObjectPath('bytes')
+BUILTINS_BYTES_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.bytes.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_BYTES_LOCAL_OBJECT_PATH, builtins)
     is builtins.bytes
 )
-BUILTINS_COMPLEX_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.complex.__qualname__)
+BUILTINS_COMPLEX_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.complex.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_COMPLEX_LOCAL_OBJECT_PATH, builtins)
     is builtins.complex
 )
-BUILTINS_DICT_LOCAL_OBJECT_PATH: Final = LocalObjectPath('dict')
+BUILTINS_DICT_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.dict.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_DICT_LOCAL_OBJECT_PATH, builtins)
     is builtins.dict
 )
-BUILTINS_FLOAT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.float.__qualname__)
+BUILTINS_FLOAT_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.float.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_FLOAT_LOCAL_OBJECT_PATH, builtins)
     is builtins.float
 )
-BUILTINS_FROZENSET_LOCAL_OBJECT_PATH: Final = LocalObjectPath('frozenset')
+BUILTINS_FROZENSET_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.frozenset.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_FROZENSET_LOCAL_OBJECT_PATH, builtins)
     is builtins.frozenset
@@ -237,36 +244,51 @@ assert (
     _search_local_path(BUILTINS_GLOBALS_LOCAL_OBJECT_PATH, builtins)
     is builtins.globals
 )
-BUILTINS_INT_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.int.__qualname__)
+BUILTINS_INT_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.int.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_INT_LOCAL_OBJECT_PATH, builtins)
     is builtins.int
 )
-BUILTINS_LIST_LOCAL_OBJECT_PATH: Final = LocalObjectPath('list')
+BUILTINS_LIST_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.list.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_LIST_LOCAL_OBJECT_PATH, builtins)
     is builtins.list
 )
-BUILTINS_OBJECT_LOCAL_OBJECT_PATH: Final = LocalObjectPath('object')
+BUILTINS_OBJECT_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.object.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_OBJECT_LOCAL_OBJECT_PATH, builtins)
     is builtins.object
 )
-BUILTINS_SET_LOCAL_OBJECT_PATH: Final = LocalObjectPath('set')
+BUILTINS_SET_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.set.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_SET_LOCAL_OBJECT_PATH, builtins)
     is builtins.set
 )
-BUILTINS_STR_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = (
-    LocalObjectPath.from_object_name(builtins.str.__qualname__)
+BUILTINS_SLICE_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.slice.__qualname__
+)
+assert (
+    _search_local_path(BUILTINS_SLICE_LOCAL_OBJECT_PATH, builtins)
+    is builtins.slice
+)
+BUILTINS_STR_LOCAL_OBJECT_PATH: Final = LocalObjectPath.from_object_name(
+    builtins.str.__qualname__
 )
 assert (
     _search_local_path(BUILTINS_STR_LOCAL_OBJECT_PATH, builtins)
     is builtins.str
 )
-BUILTINS_TUPLE_LOCAL_OBJECT_PATH: Final = LocalObjectPath('tuple')
+BUILTINS_TUPLE_LOCAL_OBJECT_PATH: Final = LocalObjectPath(
+    builtins.tuple.__qualname__
+)
 assert (
     _search_local_path(BUILTINS_TUPLE_LOCAL_OBJECT_PATH, builtins)
     is builtins.tuple
