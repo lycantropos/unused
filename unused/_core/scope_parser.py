@@ -47,6 +47,7 @@ from .object_path import (
     BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_STR_LOCAL_OBJECT_PATH,
     BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
+    BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     DICT_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
@@ -436,7 +437,7 @@ class ScopeParser(ast.NodeVisitor):
         cls_name = node.name
         cls_module_path = self._scope.module_path
         cls_local_path = self._scope.local_path.join(cls_name)
-        base_cls_objects: list[ClassObject] = []
+        bases: list[ClassObject] = []
         for index, base_node in reversed([*enumerate(node.bases)]):
             self.visit(base_node)
             base_cls = ensure_type(
@@ -452,13 +453,13 @@ class ScopeParser(ast.NodeVisitor):
             )
             if base_cls is None:
                 continue
-            base_cls_objects.append(base_cls)
+            bases.append(base_cls)
         cls_scope = Scope(
             (
                 ScopeKind.METACLASS
                 if any(
                     base_cls_object.kind is ObjectKind.METACLASS
-                    for base_cls_object in base_cls_objects
+                    for base_cls_object in bases
                 )
                 else (
                     ScopeKind.UNKNOWN_CLASS
@@ -467,7 +468,7 @@ class ScopeParser(ast.NodeVisitor):
                             base_cls_object.kind
                             in (ObjectKind.UNKNOWN, ObjectKind.UNKNOWN_CLASS)
                         )
-                        for base_cls_object in base_cls_objects
+                        for base_cls_object in bases
                     )
                     else ScopeKind.CLASS
                 )
@@ -483,10 +484,10 @@ class ScopeParser(ast.NodeVisitor):
         )
         for body_node in node.body:
             cls_parser.visit(body_node)
-        metacls_object: Class | Missing = MISSING
+        metacls: Class | Missing = MISSING
         for keyword in node.keywords:
             if keyword.arg == 'metaclass':
-                metacls_object = ensure_type(
+                candidate_metacls = ensure_type(
                     self._construct_object_from_expression_node(
                         keyword.value,
                         local_path=cls_local_path.join('__class__'),
@@ -494,12 +495,13 @@ class ScopeParser(ast.NodeVisitor):
                     ),
                     Class,
                 )
-                if metacls_object is None:
+                if candidate_metacls is None:
                     continue
-                assert metacls_object.kind in (
+                assert candidate_metacls.kind in (
                     ObjectKind.METACLASS,
                     ObjectKind.UNKNOWN_CLASS,
                 )
+                metacls = candidate_metacls
         cls_object = Class(
             cls_scope,
             *(
@@ -512,9 +514,18 @@ class ScopeParser(ast.NodeVisitor):
                     )
                 ]
                 if len(node.bases) == 0
-                else base_cls_objects
+                else bases
             ),
-            metacls=metacls_object,
+            metacls=(
+                ensure_type(
+                    BUILTINS_MODULE.get_nested_attribute(
+                        BUILTINS_TYPE_LOCAL_OBJECT_PATH
+                    ),
+                    Class,
+                )
+                if metacls is MISSING and len(node.bases) == 0
+                else metacls
+            ),
         )
         cls_object.set_attribute(
             DICT_FIELD_NAME,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 from collections.abc import Mapping, Sequence
 from typing import (
@@ -10,6 +11,7 @@ from typing import (
     Literal,
     TYPE_CHECKING,
     TypeAlias,
+    TypeGuard,
     TypeVar,
     get_args,
 )
@@ -17,6 +19,9 @@ from typing import (
 from .enums import ObjectKind, ScopeKind
 from .missing import MISSING, Missing
 from .object_path import (
+    BUILTINS_MODULE_PATH,
+    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
+    BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     CLASS_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
@@ -29,6 +34,14 @@ if TYPE_CHECKING:
     from .scope import Scope
 
 _T = TypeVar('_T')
+
+
+def _is_class_sequence(
+    bases: Sequence[ClassObject | Missing], /
+) -> TypeGuard[Sequence[Class]]:
+    return all(
+        base is not MISSING and base.kind is ObjectKind.CLASS for base in bases
+    )
 
 
 class Class:
@@ -74,10 +87,12 @@ class Class:
                     return base.get_attribute(name)
                 except KeyError:
                     continue
-            if (metaclass := self._metacls) is not MISSING:
+            if (
+                metacls := self._metacls
+            ) is not MISSING and metacls is not self:
                 assert self.kind is ObjectKind.CLASS, self
                 try:
-                    candidate = metaclass.get_attribute(name)
+                    candidate = metacls.get_attribute(name)
                 except KeyError:
                     pass
                 else:
@@ -131,22 +146,36 @@ class Class:
 
     def strict_get_attribute(self, name: str, /) -> Object:
         try:
-            return self._attributes[name]
+            candidate = self._attributes[name]
         except KeyError:
             try:
-                return self._scope.strict_get_object(name)
+                return self._scope.get_object(name)
             except KeyError:
-                for base in self._bases:
-                    try:
-                        return base.strict_get_attribute(name)
-                    except KeyError:
-                        continue
-                if (metaclass := self._metacls) is not MISSING:
-                    try:
-                        return metaclass.strict_get_attribute(name)
-                    except KeyError:
-                        pass
+                pass
+            for base in self._bases:
+                try:
+                    return base.get_attribute(name)
+                except KeyError:
+                    continue
+            if (
+                metacls := self._metacls
+            ) is not MISSING and metacls is not self:
+                assert self.kind is ObjectKind.CLASS, self
+                try:
+                    candidate = metacls.strict_get_attribute(name)
+                except KeyError:
+                    pass
+                else:
+                    if candidate.kind is ObjectKind.ROUTINE:
+                        candidate = Method(candidate, self)
+                    return candidate
             raise
+        else:
+            if candidate.kind is ObjectKind.DESCRIPTOR:
+                return UnknownObject(
+                    self.module_path, candidate.local_path, value=MISSING
+                )
+            return candidate
 
     _attributes: dict[str, Object]
     _bases: Sequence[ClassObject]
@@ -174,6 +203,38 @@ class Class:
         *bases: ClassObject,
         metacls: ClassObject | Missing,
     ) -> None:
+        if metacls is MISSING:
+            if scope.kind is ScopeKind.UNKNOWN_CLASS:
+                pass
+            elif (
+                scope.module_path == BUILTINS_MODULE_PATH
+                and scope.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
+            ):
+                metacls = self
+            elif (
+                not (
+                    scope.module_path == BUILTINS_MODULE_PATH
+                    and scope.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                )
+                and _is_class_sequence(bases)
+                and _is_class_sequence(
+                    metacls_candidates := [base.metacls for base in bases]
+                )
+            ):
+                with contextlib.suppress(TypeError):
+                    metacls = next(
+                        candidate
+                        for candidate in metacls_candidates
+                        if all(
+                            is_subclass(candidate, other_candidate)
+                            for other_candidate in metacls_candidates
+                            if other_candidate is not candidate
+                        )
+                    )
+        assert (self is metacls) is (
+            scope.module_path == BUILTINS_MODULE_PATH
+            and scope.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
+        )
         assert scope.kind in CLASS_SCOPE_KINDS, scope
         assert [
             base_index
@@ -192,9 +253,13 @@ class Class:
             f'{type(self).__qualname__}('
             f'{self._scope!r}'
             f'{", " * bool(self._bases)}'
-            f'{", ".join(map(repr, self._bases))}, '
-            f'metaclass={self._metacls}'
-            ')'
+            f'{", ".join(map(repr, self._bases))}'
+            + (
+                f', metacls={self._metacls!r}'
+                if self is not self._metacls
+                else ''
+            )
+            + ')'
         )
 
 
@@ -406,7 +471,7 @@ class Call:
     _module_path: ModulePath
     _callable: Object
     _objects: dict[str, Object]
-    _positional_arguments: Sequence[tuple[Object] | Object]
+    _positional_arguments: Sequence[tuple[bool, Object]]
 
     __slots__ = (
         '_callable',
@@ -435,7 +500,7 @@ class Call:
         module_path: ModulePath,
         local_path: LocalObjectPath,
         callable_: Object,
-        positional_arguments: Sequence[tuple[Object] | Object],
+        positional_arguments: Sequence[tuple[bool, Object]],
         keyword_arguments: Sequence[tuple[str | None, Object]],
         /,
     ) -> None:
@@ -1071,3 +1136,43 @@ def object_get_attribute(object_: Object, name: str, /) -> Object:
 
 def to_object_value(object_: Object, /) -> Any:
     return object_.value
+
+
+def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
+    if not isinstance(cls, Class):
+        raise TypeError(cls)
+    result = [cls]
+    if (
+        cls.module_path == BUILTINS_MODULE_PATH
+        and cls.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+    ):
+        return result
+    parent_chains: list[Sequence[Any]] = [
+        cls_to_mro(base_cls) for base_cls in cls.bases
+    ]
+    parent_chains.append([*cls.bases])
+    while parent_chains:
+        next_parent = None
+        for parent_chain in parent_chains:
+            candidate = parent_chain[0]
+            if not any(candidate in chain[1:] for chain in parent_chains):
+                next_parent = candidate
+                break
+        if next_parent is None:
+            raise TypeError('MRO resolution error.')
+        if next_parent.kind is not ObjectKind.CLASS:
+            raise TypeError(next_parent.kind)
+        result.append(next_parent)
+        parent_chains = [
+            new_chain
+            for chain in parent_chains
+            if len(
+                new_chain := (chain[1:] if chain[0] is next_parent else chain)
+            )
+            > 0
+        ]
+    return result
+
+
+def is_subclass(test_cls: Class, target_cls: Class, /) -> bool:
+    return any(parent_cls is target_cls for parent_cls in cls_to_mro(test_cls))

@@ -10,10 +10,18 @@ from functools import reduce
 from typing import Any, Final
 
 from .context import Context
-from .enums import ObjectKind
+from .enums import ObjectKind, ScopeKind
 from .missing import MISSING, Missing
 from .modules import BUILTINS_MODULE, TYPES_MODULE
-from .object_ import Class, ClassObject, Instance, Object, UnknownObject
+from .object_ import (
+    Call,
+    Class,
+    ClassObject,
+    Instance,
+    Object,
+    UnknownObject,
+    is_subclass,
+)
 from .object_path import (
     BUILTINS_BOOL_LOCAL_OBJECT_PATH,
     BUILTINS_BYTES_LOCAL_OBJECT_PATH,
@@ -24,7 +32,6 @@ from .object_path import (
     BUILTINS_INT_LOCAL_OBJECT_PATH,
     BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
-    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_SET_LOCAL_OBJECT_PATH,
     BUILTINS_SLICE_LOCAL_OBJECT_PATH,
     BUILTINS_STR_LOCAL_OBJECT_PATH,
@@ -217,21 +224,24 @@ def _(
                 or subject_is_variadic
                 or attribute_name_object_is_variadic
             ):
-                raise TypeError(ast.unparse(node))
-            attribute_name = attribute_name_object.value
-            if not isinstance(attribute_name, str):
-                raise TypeError(ast.unparse(node))
-            try:
-                subject.strict_get_attribute(attribute_name)
-            except KeyError:
-                value = False
-            else:
-                value = True
-            return value_to_object(
-                value,
-                module_path=scope.module_path,
-                local_path=scope.local_path.join(generate_random_identifier()),
-            )
+                pass
+            elif isinstance(
+                attribute_name := attribute_name_object.value, str
+            ):
+                try:
+                    subject.strict_get_attribute(attribute_name)
+                except KeyError:
+                    value = False
+                else:
+                    value = True
+                return value_to_object(
+                    value,
+                    module_path=scope.module_path,
+                    local_path=scope.local_path.join(
+                        generate_random_identifier()
+                    ),
+                )
+            raise TypeError(ast.unparse(node))
         if routine_object.local_path == BUILTINS_ISINSTANCE_LOCAL_OBJECT_PATH:
             (
                 (subject_is_variadic, subject),
@@ -244,14 +254,35 @@ def _(
                 or cls_or_tuple.kind is not ObjectKind.CLASS
             ):
                 pass
-            elif (
-                subject_cls := object_to_cls(subject)
-            ).kind is ObjectKind.CLASS:
+            elif (subject_cls := object_to_cls(subject)).kind in (
+                ObjectKind.METACLASS,
+                ObjectKind.CLASS,
+            ):
+                assert isinstance(subject_cls, Class), subject_cls
                 return value_to_object(
-                    any(
-                        parent_cls is cls_or_tuple
-                        for parent_cls in cls_to_mro(subject_cls)
+                    is_subclass(subject_cls, cls_or_tuple),
+                    module_path=scope.module_path,
+                    local_path=scope.local_path.join(
+                        generate_random_identifier()
                     ),
+                )
+            raise TypeError(ast.unparse(node))
+        if routine_object.local_path == BUILTINS_ISSUBCLASS_LOCAL_OBJECT_PATH:
+            (
+                (subject_is_variadic, subject),
+                (cls_or_tuple_is_variadic, cls_or_tuple),
+            ) = positional_argument_objects
+            if (
+                len(keyword_argument_objects) > 0
+                or subject_is_variadic
+                or cls_or_tuple_is_variadic
+                or cls_or_tuple.kind is not ObjectKind.CLASS
+            ):
+                pass
+            elif subject.kind in (ObjectKind.METACLASS, ObjectKind.CLASS):
+                assert isinstance(subject, Class), subject
+                return value_to_object(
+                    is_subclass(subject, cls_or_tuple),
                     module_path=scope.module_path,
                     local_path=scope.local_path.join(
                         generate_random_identifier()
@@ -341,7 +372,29 @@ def _(
             module_path=scope.module_path,
             local_path=scope.local_path.join(generate_random_identifier()),
         )
-    raise TypeError(ast.unparse(node))
+    if callable_object.kind is ObjectKind.CLASS:
+        return Instance(
+            scope.module_path,
+            scope.local_path.join(generate_random_identifier()),
+            cls=callable_object,
+            value=MISSING,
+        )
+    if callable_object.kind is ObjectKind.METACLASS:
+        return Class(
+            Scope(
+                ScopeKind.CLASS,
+                scope.module_path,
+                scope.local_path.join(generate_random_identifier()),
+            ),
+            metacls=callable_object,
+        )
+    return Call(
+        scope.module_path,
+        scope.local_path.join(generate_random_identifier()),
+        callable_object,
+        positional_argument_objects,
+        keyword_argument_objects,
+    )
 
 
 def object_to_cls(object_: Object, /) -> ClassObject:
@@ -370,42 +423,6 @@ def object_to_cls(object_: Object, /) -> ClassObject:
         ObjectKind.UNKNOWN_CLASS,
     )
     raise TypeError(object_)
-
-
-def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
-    if cls.kind is not ObjectKind.CLASS:
-        raise TypeError(cls.kind)
-    result = [cls]
-    if (
-        cls.module_path == BUILTINS_MODULE_PATH
-        and cls.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
-    ):
-        return result
-    parent_chains: list[Sequence[Any]] = [
-        cls_to_mro(base_cls) for base_cls in cls.bases
-    ]
-    parent_chains.append([*cls.bases])
-    while parent_chains:
-        next_parent = None
-        for parent_chain in parent_chains:
-            candidate = parent_chain[0]
-            if not any(candidate in chain[1:] for chain in parent_chains):
-                next_parent = candidate
-                break
-        if next_parent is None:
-            raise TypeError('MRO resolution error.')
-        if next_parent.kind is not ObjectKind.CLASS:
-            raise TypeError(next_parent.kind)
-        result.append(next_parent)
-        parent_chains = [
-            new_chain
-            for chain in parent_chains
-            if len(
-                new_chain := (chain[1:] if chain[0] is next_parent else chain)
-            )
-            > 0
-        ]
-    return result
 
 
 _binary_operators_by_operator_type: Mapping[

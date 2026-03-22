@@ -231,18 +231,14 @@ def _(
         local_path,
         callable_object,
         [
-            construct_object_from_expression_node(
-                argument_node.value,
-                scope,
-                *parent_scopes,
-                context=context,
-                local_path=local_path.join(f'__args_{argument_index}__'),
-                module_path=module_path,
-            )
-            if isinstance(argument_node, ast.Starred)
-            else (
+            (
+                isinstance(argument_node, ast.Starred),
                 construct_object_from_expression_node(
-                    argument_node,
+                    (
+                        argument_node.value
+                        if isinstance(argument_node, ast.Starred)
+                        else argument_node
+                    ),
                     scope,
                     *parent_scopes,
                     context=context,
