@@ -59,7 +59,38 @@ class Class:
 
     @property
     def metacls(self, /) -> ClassObject | Missing:
-        return self._metacls
+        result = self._metacls
+        if result is MISSING:
+            if self.kind is ObjectKind.UNKNOWN_CLASS:
+                pass
+            elif (
+                self.module_path == BUILTINS_MODULE_PATH
+                and self.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
+            ):
+                self._metacls = result = self
+            elif (
+                not (
+                    self.module_path == BUILTINS_MODULE_PATH
+                    and self.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
+                )
+                and _is_class_sequence(self._bases)
+                and _is_class_sequence(
+                    metacls_candidates := [
+                        base.metacls for base in self._bases
+                    ]
+                )
+            ):
+                with contextlib.suppress(TypeError):
+                    self._metacls = result = next(
+                        candidate
+                        for candidate in metacls_candidates
+                        if all(
+                            is_subclass(candidate, other_candidate)
+                            for other_candidate in metacls_candidates
+                            if other_candidate is not candidate
+                        )
+                    )
+        return result
 
     @property
     def module_path(self, /) -> ModulePath:
@@ -129,10 +160,7 @@ class Class:
                 )
             except KeyError:
                 pass
-            object_path = _object_to_path(self)
-            if object_path in visited_object_paths:
-                raise
-            visited_object_paths.add(object_path)
+            visited_object_paths.add(_object_to_path(self))
             for base in self._bases:
                 base_path = _object_to_path(base)
                 if base_path in visited_object_paths:
@@ -199,38 +227,6 @@ class Class:
         metacls: ClassObject | Missing,
     ) -> None:
         _validate_mro(bases)
-        if metacls is MISSING:
-            if scope.kind is ScopeKind.UNKNOWN_CLASS:
-                pass
-            elif (
-                scope.module_path == BUILTINS_MODULE_PATH
-                and scope.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
-            ):
-                metacls = self
-            elif (
-                not (
-                    scope.module_path == BUILTINS_MODULE_PATH
-                    and scope.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
-                )
-                and _is_class_sequence(bases)
-                and _is_class_sequence(
-                    metacls_candidates := [base.metacls for base in bases]
-                )
-            ):
-                with contextlib.suppress(TypeError):
-                    metacls = next(
-                        candidate
-                        for candidate in metacls_candidates
-                        if all(
-                            is_subclass(candidate, other_candidate)
-                            for other_candidate in metacls_candidates
-                            if other_candidate is not candidate
-                        )
-                    )
-        assert (self is metacls) is (
-            scope.module_path == BUILTINS_MODULE_PATH
-            and scope.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH
-        )
         assert scope.kind in CLASS_SCOPE_KINDS, scope
         assert [
             base_index
