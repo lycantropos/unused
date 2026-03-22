@@ -241,21 +241,23 @@ def _(
                 len(keyword_argument_objects) > 0
                 or subject_is_variadic
                 or cls_or_tuple_is_variadic
-                or subject.kind is not ObjectKind.INSTANCE
                 or cls_or_tuple.kind is not ObjectKind.CLASS
             ):
-                raise TypeError(ast.unparse(node))
-            subject_cls = subject.cls
-            if subject_cls.kind is not ObjectKind.CLASS:
-                raise TypeError(ast.unparse(node))
-            return value_to_object(
-                any(
-                    parent_cls is cls_or_tuple
-                    for parent_cls in cls_to_mro(subject_cls)
-                ),
-                module_path=scope.module_path,
-                local_path=scope.local_path.join(generate_random_identifier()),
-            )
+                pass
+            elif (
+                subject_cls := object_to_cls(subject)
+            ).kind is ObjectKind.CLASS:
+                return value_to_object(
+                    any(
+                        parent_cls is cls_or_tuple
+                        for parent_cls in cls_to_mro(subject_cls)
+                    ),
+                    module_path=scope.module_path,
+                    local_path=scope.local_path.join(
+                        generate_random_identifier()
+                    ),
+                )
+            raise TypeError(ast.unparse(node))
         if routine_object.local_path == BUILTINS_TYPE_LOCAL_OBJECT_PATH:
             if (
                 len(positional_argument_objects) != 1
@@ -340,6 +342,34 @@ def _(
             local_path=scope.local_path.join(generate_random_identifier()),
         )
     raise TypeError(ast.unparse(node))
+
+
+def object_to_cls(object_: Object, /) -> ClassObject:
+    if object_.kind is ObjectKind.CLASS:
+        metacls = object_.metacls
+        if metacls is MISSING:
+            raise TypeError(object_)
+        return metacls
+    if (
+        object_.kind is ObjectKind.DESCRIPTOR
+        or object_.kind is ObjectKind.INSTANCE
+        or object_.kind is ObjectKind.ROUTINE
+    ):
+        return object_.cls
+    if (
+        object_.kind is ObjectKind.BUILTIN_MODULE
+        or object_.kind is ObjectKind.DYNAMIC_MODULE
+        or object_.kind is ObjectKind.EXTENSION_MODULE
+        or object_.kind is ObjectKind.METHOD
+        or object_.kind is ObjectKind.STATIC_MODULE
+    ):
+        return object_.CLS
+    assert object_.kind in (
+        ObjectKind.ROUTINE_CALL,
+        ObjectKind.UNKNOWN,
+        ObjectKind.UNKNOWN_CLASS,
+    )
+    raise TypeError(object_)
 
 
 def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:

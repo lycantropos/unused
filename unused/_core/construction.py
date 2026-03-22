@@ -312,13 +312,13 @@ def _(
     return Routine(
         module_path,
         local_path,
-        ensure_type(
+        ast_node=node,
+        cls=ensure_type(
             TYPES_MODULE.get_nested_attribute(
                 TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
             ),
             Class,
         ),
-        ast_node=node,
         keyword_only_defaults=function_node_to_keyword_only_defaults(
             node.args, scope, *parent_scopes, context=context
         ),

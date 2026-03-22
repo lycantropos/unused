@@ -960,8 +960,8 @@ def _parse_modules(
                     value_object = Routine(
                         value_module_path,
                         value_local_path,
-                        value_base_cls,
                         ast_node=value_ast_node,
+                        cls=value_base_cls,
                         keyword_only_defaults=value.__kwdefaults__ or {},
                         positional_defaults=value.__defaults__ or (),
                     )
@@ -994,8 +994,8 @@ def _parse_modules(
                     value_object = Routine(
                         value_module_path,
                         value_local_path,
-                        value_base_cls,
                         ast_node=value_ast_node,
+                        cls=value_base_cls,
                         keyword_only_defaults={},
                         positional_defaults=(),
                     )
@@ -1011,8 +1011,8 @@ def _parse_modules(
                     value_object = Descriptor(
                         value_module_path,
                         value_local_path,
-                        value_base_cls,
                         ast_node=value_ast_node,
+                        cls=value_base_cls,
                     )
         value_module_object = result[value_module_path]
         value_module_object.set_nested_attribute(
@@ -2228,11 +2228,11 @@ MODULES: Final[MutableMapping[ModulePath, MutableObject]] = _parse_modules(
 )
 BUILTINS_MODULE: Final = ensure_type(MODULES[BUILTINS_MODULE_PATH], Module)
 TYPES_MODULE: Final = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
-Method.BASE_CLS = ensure_type(
+Method.CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH),
     Class,
 )
-Module.BASE_CLS = ensure_type(
+Module.CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH),
     Class,
 )

@@ -515,7 +515,7 @@ class Method:
             return self._objects[name]
         except KeyError:
             try:
-                candidate = self.BASE_CLS.get_attribute(name)
+                candidate = self.CLS.get_attribute(name)
             except KeyError:
                 pass
             else:
@@ -524,7 +524,7 @@ class Method:
                 return candidate
             raise
 
-    BASE_CLS: ClassVar[Class]
+    CLS: ClassVar[Class]
 
     _instance: Object
     _objects: dict[str, Object]
@@ -560,6 +560,10 @@ class Routine:
     @property
     def ast_node(self, /) -> AnyFunctionDefinitionAstNode | ast.Lambda | None:
         return self._ast_node
+
+    @property
+    def cls(self, /) -> Class | UnknownObject:
+        return self._cls
 
     @property
     def kind(self, /) -> Literal[ObjectKind.ROUTINE]:
@@ -615,26 +619,25 @@ class Routine:
         try:
             return self._objects[name]
         except KeyError:
-            for base_cls in self._base_classes:
-                try:
-                    candidate = base_cls.get_attribute(name)
-                except KeyError:
-                    continue
-                else:
-                    if candidate.kind is ObjectKind.ROUTINE:
-                        candidate = Method(candidate, self)
-                    return candidate
+            try:
+                candidate = self._cls.get_attribute(name)
+            except KeyError:
+                pass
+            else:
+                if candidate.kind is ObjectKind.ROUTINE:
+                    candidate = Method(candidate, self)
+                return candidate
             raise
 
     _ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None
-    _base_classes: Sequence[Class | UnknownObject]
+    _cls: Class | UnknownObject
     _module_path: ModulePath
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
 
     __slots__ = (
         '_ast_node',
-        '_base_classes',
+        '_cls',
         '_local_path',
         '_module_path',
         '_objects',
@@ -646,7 +649,7 @@ class Routine:
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
                 and self._objects == other._objects
-                and self._base_classes == other._base_classes
+                and self._cls == other._cls
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -657,20 +660,21 @@ class Routine:
         module_path: ModulePath,
         local_path: LocalObjectPath,
         /,
-        *base_classes: Class | UnknownObject,
+        *,
         ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None,
+        cls: Class | UnknownObject,
         keyword_only_defaults: Mapping[Any, Any],
         positional_defaults: Sequence[Any],
     ) -> None:
         (
             self._ast_node,
-            self._base_classes,
+            self._cls,
             self._local_path,
             self._module_path,
             self._objects,
         ) = (
             ast_node,
-            base_classes,
+            cls,
             local_path,
             module_path,
             {
@@ -690,9 +694,7 @@ class Routine:
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
-            f'{self._module_path!r}, {self._local_path!r}'
-            f'{", " * bool(self._base_classes)}'
-            f'{", ".join(map(repr, self._base_classes))}'
+            f'{self._module_path!r}, {self._local_path!r}, cls={self._cls!r}'
             ')'
         )
 
@@ -701,6 +703,10 @@ class Descriptor:
     @property
     def ast_node(self, /) -> AnyFunctionDefinitionAstNode | None:
         return self._ast_node
+
+    @property
+    def cls(self, /) -> Class | UnknownObject:
+        return self._cls
 
     @property
     def kind(self, /) -> Literal[ObjectKind.DESCRIPTOR]:
@@ -739,30 +745,24 @@ class Descriptor:
         return self.strict_get_attribute(name)
 
     def strict_get_attribute(self, name: str, /) -> Object:
-        for base_cls in self._base_classes:
-            try:
-                candidate = base_cls.get_attribute(name)
-            except KeyError:
-                continue
-            else:
-                if candidate.kind is ObjectKind.ROUTINE:
-                    candidate = Method(candidate, self)
-                return candidate
-        raise KeyError(name)
+        candidate = self._cls.get_attribute(name)
+        if candidate.kind is ObjectKind.ROUTINE:
+            candidate = Method(candidate, self)
+        return candidate
 
     _ast_node: AnyFunctionDefinitionAstNode | None
-    _base_classes: Sequence[Class | UnknownObject]
+    _cls: Class | UnknownObject
     _local_path: LocalObjectPath
     _module_path: ModulePath
 
-    __slots__ = '_ast_node', '_base_classes', '_local_path', '_module_path'
+    __slots__ = '_ast_node', '_cls', '_local_path', '_module_path'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
-                and self._base_classes == other._base_classes
+                and self._cls == other._cls
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -773,28 +773,27 @@ class Descriptor:
         module_path: ModulePath,
         local_path: LocalObjectPath,
         /,
-        *base_classes: Class | UnknownObject,
+        *,
+        cls: Class | UnknownObject,
         ast_node: AnyFunctionDefinitionAstNode | None,
     ) -> None:
-        (
-            self._ast_node,
-            self._base_classes,
-            self._local_path,
-            self._module_path,
-        ) = ast_node, base_classes, local_path, module_path
+        self._ast_node, self._cls, self._local_path, self._module_path = (
+            ast_node,
+            cls,
+            local_path,
+            module_path,
+        )
 
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
-            f'{self._module_path!r}, {self._local_path!r}'
-            f'{", " * bool(self._base_classes)}'
-            f'{", ".join(map(repr, self._base_classes))}'
+            f'{self._module_path!r}, {self._local_path!r}, cls={self._cls!r}'
             ')'
         )
 
 
 class Module:
-    BASE_CLS: ClassVar[Class | None] = None
+    CLS: ClassVar[Class]
 
     @property
     def kind(
@@ -832,15 +831,18 @@ class Module:
 
     def get_attribute(self, name: str, /) -> Object:
         if name == CLASS_FIELD_NAME:
-            assert self.BASE_CLS is not None, self
-            return self.BASE_CLS
+            return self.CLS
         assert isinstance(name, str), name
         try:
             return self._scope.get_object(name)
         except KeyError:
-            if (base_cls := self.BASE_CLS) is not None:
+            try:
+                cls = self.CLS
+            except AttributeError:
+                pass
+            else:
                 try:
-                    candidate = base_cls.get_attribute(name)
+                    candidate = cls.get_attribute(name)
                 except KeyError:
                     pass
                 else:

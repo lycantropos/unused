@@ -1229,13 +1229,13 @@ class ScopeParser(ast.NodeVisitor):
                 function_object = Descriptor(
                     self._scope.module_path,
                     function_local_path,
-                    ensure_type(
+                    ast_node=node,
+                    cls=ensure_type(
                         BUILTINS_MODULE.get_nested_attribute(
                             BUILTINS_PROPERTY_LOCAL_OBJECT_PATH
                         ),
                         Class,
                     ),
-                    ast_node=node,
                 )
                 break
             if (
@@ -1264,18 +1264,21 @@ class ScopeParser(ast.NodeVisitor):
                 function_object = Routine(
                     self._scope.module_path,
                     function_local_path,
-                    ensure_type(
-                        TYPES_MODULE.get_nested_attribute(
-                            TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    ),
-                    UnknownObject(
-                        decorator_object.module_path,
-                        decorator_object.local_path,
-                        value=MISSING,
-                    ),
                     ast_node=node,
+                    cls=Class(
+                        Scope(
+                            ScopeKind.UNKNOWN_CLASS,
+                            decorator_object.module_path,
+                            decorator_object.local_path,
+                        ),
+                        ensure_type(
+                            TYPES_MODULE.get_nested_attribute(
+                                TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
+                            ),
+                            Class,
+                        ),
+                        metacls=MISSING,
+                    ),
                     keyword_only_defaults=keyword_only_defaults,
                     positional_defaults=positional_defaults,
                 )
@@ -1309,13 +1312,13 @@ class ScopeParser(ast.NodeVisitor):
                     wrapped_object = Routine(
                         self._scope.module_path,
                         function_local_path.join('__func__'),
-                        ensure_type(
+                        ast_node=node,
+                        cls=ensure_type(
                             TYPES_MODULE.get_nested_attribute(
                                 TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                             ),
                             Class,
                         ),
-                        ast_node=node,
                         keyword_only_defaults=keyword_only_defaults,
                         positional_defaults=positional_defaults,
                     )
@@ -1325,13 +1328,13 @@ class ScopeParser(ast.NodeVisitor):
             function_object = Routine(
                 self._scope.module_path,
                 function_local_path,
-                ensure_type(
+                ast_node=node,
+                cls=ensure_type(
                     TYPES_MODULE.get_nested_attribute(
                         TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH
                     ),
                     Class,
                 ),
-                ast_node=node,
                 keyword_only_defaults=keyword_only_defaults,
                 positional_defaults=positional_defaults,
             )
