@@ -2230,7 +2230,7 @@ MODULES: Final[MutableMapping[ModulePath, MutableObject]] = _parse_modules(
 )
 BUILTINS_MODULE: Final = ensure_type(MODULES[BUILTINS_MODULE_PATH], Module)
 TYPES_MODULE: Final = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
-BUILTINS_OBJECT = ensure_type(
+BUILTINS_OBJECT: Final = ensure_type(
     BUILTINS_MODULE.get_nested_attribute(BUILTINS_OBJECT_LOCAL_OBJECT_PATH),
     Class,
 )

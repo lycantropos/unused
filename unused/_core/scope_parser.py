@@ -26,7 +26,7 @@ from .evaluation import (
 )
 from .lookup import lookup_object_by_expression_node
 from .missing import MISSING, Missing
-from .modules import BUILTINS_MODULE, MODULES, TYPES_MODULE
+from .modules import BUILTINS_MODULE, BUILTINS_OBJECT, MODULES, TYPES_MODULE
 from .object_ import (
     CLASS_OBJECT_CLASSES,
     CLASS_SCOPE_KINDS,
@@ -44,7 +44,6 @@ from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
     BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
-    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_STR_LOCAL_OBJECT_PATH,
     BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     BUILTINS_TYPE_LOCAL_OBJECT_PATH,
@@ -504,18 +503,7 @@ class ScopeParser(ast.NodeVisitor):
                 metacls = candidate_metacls
         cls_object = Class(
             cls_scope,
-            *(
-                [
-                    ensure_type(
-                        BUILTINS_MODULE.get_nested_attribute(
-                            BUILTINS_OBJECT_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    )
-                ]
-                if len(node.bases) == 0
-                else bases
-            ),
+            *([BUILTINS_OBJECT] if len(node.bases) == 0 else bases),
             metacls=(
                 ensure_type(
                     BUILTINS_MODULE.get_nested_attribute(
