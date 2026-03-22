@@ -229,7 +229,7 @@ def _(
                 attribute_name := attribute_name_object.value, str
             ):
                 try:
-                    subject.strict_get_attribute(attribute_name)
+                    subject.get_attribute(attribute_name, strict=True)
                 except KeyError:
                     value = False
                 else:

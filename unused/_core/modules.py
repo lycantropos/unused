@@ -41,6 +41,8 @@ from .object_ import (
 )
 from .object_path import (
     BUILTINS_MODULE_PATH,
+    BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
+    BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     LocalObjectPath,
     ModulePath,
     ObjectPath,
@@ -2228,6 +2230,14 @@ MODULES: Final[MutableMapping[ModulePath, MutableObject]] = _parse_modules(
 )
 BUILTINS_MODULE: Final = ensure_type(MODULES[BUILTINS_MODULE_PATH], Module)
 TYPES_MODULE: Final = ensure_type(MODULES[TYPES_MODULE_PATH], Module)
+BUILTINS_OBJECT = ensure_type(
+    BUILTINS_MODULE.get_nested_attribute(BUILTINS_OBJECT_LOCAL_OBJECT_PATH),
+    Class,
+)
+BUILTINS_OBJECT._metacls = ensure_type(  # noqa: SLF001
+    BUILTINS_MODULE.get_nested_attribute(BUILTINS_TYPE_LOCAL_OBJECT_PATH),
+    Class,
+)
 Method.CLS = ensure_type(
     TYPES_MODULE.get_nested_attribute(TYPES_METHOD_TYPE_LOCAL_OBJECT_PATH),
     Class,

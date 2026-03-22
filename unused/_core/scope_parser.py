@@ -438,7 +438,7 @@ class ScopeParser(ast.NodeVisitor):
         cls_module_path = self._scope.module_path
         cls_local_path = self._scope.local_path.join(cls_name)
         bases: list[ClassObject] = []
-        for index, base_node in reversed([*enumerate(node.bases)]):
+        for index, base_node in enumerate(node.bases):
             self.visit(base_node)
             base_cls = ensure_type(
                 self._construct_object_from_expression_node(

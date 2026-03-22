@@ -12,7 +12,7 @@ from .object_ import (
     UnknownObject,
     object_get_attribute,
 )
-from .object_path import LocalObjectPath, ModulePath
+from .object_path import LocalObjectPath, ModulePath, ObjectPath
 from .utils import ensure_type
 
 _T = TypeVar('_T')
@@ -55,16 +55,32 @@ class Scope:
             self.get_object(first_component),
         )
 
-    def get_object(self, name: str, /) -> Object:
+    def get_object(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_object(
+            name, strict=strict, visited_object_paths=set()
+        )
+
+    def _get_object(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             for included_object in self._included_objects:
                 try:
-                    return included_object.get_attribute(name)
+                    return included_object._get_attribute(  # noqa: SLF001
+                        name,
+                        strict=strict,
+                        visited_object_paths=visited_object_paths,
+                    )
                 except KeyError:
                     continue
-            if self.kind in (
+            if not strict and self.kind in (
                 ScopeKind.BUILTIN_MODULE,
                 ScopeKind.DYNAMIC_MODULE,
                 ScopeKind.EXTENSION_MODULE,
@@ -122,18 +138,6 @@ class Scope:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
         self._objects[name] = object_
-
-    def strict_get_object(self, name: str, /) -> Object:
-        assert isinstance(name, str), name
-        try:
-            return self._objects[name]
-        except KeyError:
-            for included_object in self._included_objects:
-                try:
-                    return included_object.strict_get_attribute(name)
-                except KeyError:
-                    continue
-            raise
 
     def _checked_get_object(self, name: str, /) -> Object | None:
         try:

@@ -190,11 +190,11 @@ def lookup_object_by_name(
     name: str, scope: Scope, /, *parent_scopes: Scope
 ) -> Object:
     try:
-        return scope.strict_get_object(name)
+        return scope.get_object(name, strict=True)
     except KeyError:
         for parent_scope in parent_scopes:
             try:
-                return parent_scope.strict_get_object(name)
+                return parent_scope.get_object(name, strict=True)
             except KeyError:
                 continue
     try:

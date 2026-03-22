@@ -182,13 +182,27 @@ def main() -> None:
     module_file_paths = load_module_file_paths(root_path)
 
     stderr, stdout = sys.stderr, sys.stdout
+
+    def to_non_overlapping_suffixes(
+        suffixes: tuple[str, ...], /
+    ) -> tuple[str, ...]:
+        return tuple(
+            suffix
+            for suffix in suffixes
+            if not any(
+                suffix.endswith(other_suffix)
+                for other_suffix in suffixes
+                if other_suffix != suffix
+            )
+        )
+
     for module_file_path in chain.from_iterable(
         (
-            chain(
-                *[
-                    path.rglob('*' + suffix)
-                    for suffix in MODULE_FILE_PATH_SUFFIXES
-                ]
+            chain.from_iterable(
+                path.rglob('*' + suffix)
+                for suffix in to_non_overlapping_suffixes(
+                    MODULE_FILE_PATH_SUFFIXES
+                )
             )
             if path.is_dir()
             else [path]

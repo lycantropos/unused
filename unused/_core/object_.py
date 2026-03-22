@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
-from collections.abc import Mapping, Sequence
+from collections import deque
+from collections.abc import Iterable, Mapping, Sequence
+from reprlib import recursive_repr
 from typing import (
     Any,
     ClassVar,
@@ -27,6 +29,7 @@ from .object_path import (
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
+    ObjectPath,
 )
 from .utils import AnyFunctionDefinitionAstNode, ensure_type
 
@@ -34,14 +37,6 @@ if TYPE_CHECKING:
     from .scope import Scope
 
 _T = TypeVar('_T')
-
-
-def _is_class_sequence(
-    bases: Sequence[ClassObject | Missing], /
-) -> TypeGuard[Sequence[Class]]:
-    return all(
-        base is not MISSING and base.kind is ObjectKind.CLASS for base in bases
-    )
 
 
 class Class:
@@ -74,44 +69,10 @@ class Class:
     def value(self, /) -> Any:
         raise NameError(self._scope.local_path.components[-1])
 
-    def get_attribute(self, name: str, /) -> Object:
-        try:
-            candidate = self._attributes[name]
-        except KeyError:
-            try:
-                return self._scope.get_object(name)
-            except KeyError:
-                pass
-            for base in self._bases:
-                try:
-                    return base.get_attribute(name)
-                except KeyError:
-                    continue
-            if (
-                metacls := self._metacls
-            ) is not MISSING and metacls is not self:
-                assert self.kind is ObjectKind.CLASS, self
-                try:
-                    candidate = metacls.get_attribute(name)
-                except KeyError:
-                    pass
-                else:
-                    if candidate.kind is ObjectKind.ROUTINE:
-                        candidate = Method(candidate, self)
-                    return candidate
-            if self.kind is ObjectKind.UNKNOWN_CLASS:
-                assert name not in self._attributes
-                self._attributes[name] = result = UnknownObject(
-                    self.module_path, self.local_path.join(name), value=MISSING
-                )
-                return result
-            raise
-        else:
-            if candidate.kind is ObjectKind.DESCRIPTOR:
-                return UnknownObject(
-                    self.module_path, candidate.local_path, value=MISSING
-                )
-            return candidate
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -144,31 +105,70 @@ class Class:
             local_path.components[-1], object_
         )
 
-    def strict_get_attribute(self, name: str, /) -> Object:
+    _attributes: dict[str, Object]
+    _bases: Sequence[ClassObject]
+    _metacls: ClassObject | Missing
+    _scope: Scope
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
         try:
             candidate = self._attributes[name]
         except KeyError:
             try:
-                return self._scope.get_object(name)
+                return self._scope._get_object(  # noqa: SLF001
+                    name,
+                    strict=strict,
+                    visited_object_paths=visited_object_paths,
+                )
             except KeyError:
                 pass
+            object_path = _object_to_path(self)
+            if object_path in visited_object_paths:
+                raise
+            visited_object_paths.add(object_path)
             for base in self._bases:
+                base_path = _object_to_path(base)
+                if base_path in visited_object_paths:
+                    continue
+                visited_object_paths.add(base_path)
                 try:
-                    return base.get_attribute(name)
+                    return base._get_attribute(  # noqa: SLF001
+                        name,
+                        strict=strict,
+                        visited_object_paths=visited_object_paths,
+                    )
                 except KeyError:
                     continue
-            if (
-                metacls := self._metacls
-            ) is not MISSING and metacls is not self:
+            if (metacls := self._metacls) is not MISSING and (
+                metacls_path := _object_to_path(metacls)
+            ) not in visited_object_paths:
+                visited_object_paths.add(metacls_path)
                 assert self.kind is ObjectKind.CLASS, self
                 try:
-                    candidate = metacls.strict_get_attribute(name)
+                    candidate = metacls._get_attribute(  # noqa: SLF001
+                        name,
+                        strict=strict,
+                        visited_object_paths=visited_object_paths,
+                    )
                 except KeyError:
                     pass
                 else:
                     if candidate.kind is ObjectKind.ROUTINE:
                         candidate = Method(candidate, self)
                     return candidate
+            if not strict and self.kind is ObjectKind.UNKNOWN_CLASS:
+                assert name not in self._attributes
+                self._attributes[name] = result = UnknownObject(
+                    self.module_path, self.local_path.join(name), value=MISSING
+                )
+                return result
             raise
         else:
             if candidate.kind is ObjectKind.DESCRIPTOR:
@@ -176,11 +176,6 @@ class Class:
                     self.module_path, candidate.local_path, value=MISSING
                 )
             return candidate
-
-    _attributes: dict[str, Object]
-    _bases: Sequence[ClassObject]
-    _metacls: ClassObject | Missing
-    _scope: Scope
 
     __slots__ = '_attributes', '_bases', '_metacls', '_scope'
 
@@ -203,6 +198,7 @@ class Class:
         *bases: ClassObject,
         metacls: ClassObject | Missing,
     ) -> None:
+        _validate_mro(bases)
         if metacls is MISSING:
             if scope.kind is ScopeKind.UNKNOWN_CLASS:
                 pass
@@ -248,18 +244,15 @@ class Class:
             scope,
         )
 
+    @recursive_repr()
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
             f'{self._scope!r}'
             f'{", " * bool(self._bases)}'
-            f'{", ".join(map(repr, self._bases))}'
-            + (
-                f', metacls={self._metacls!r}'
-                if self is not self._metacls
-                else ''
-            )
-            + ')'
+            f'{", ".join(map(repr, self._bases))}, '
+            f'metacls={self._metacls!r}'
+            ')'
         )
 
 
@@ -303,12 +296,48 @@ class Instance:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_attribute(self, name: str, /) -> Object:
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
+
+    def set_attribute(self, name: str, object_: Object, /) -> None:
+        assert isinstance(name, str), (name, object_)
+        assert isinstance(object_, Object), (name, object_)
+        self._objects[name] = object_
+
+    def set_nested_attribute(
+        self, local_path: LocalObjectPath, object_: Object, /
+    ) -> None:
+        assert isinstance(local_path, LocalObjectPath), local_path
+        assert isinstance(object_, Object), object_
+        self.get_mutable_nested_attribute(local_path.parent).set_attribute(
+            local_path.components[-1], object_
+        )
+
+    _cls: Class | UnknownObject
+    _local_path: LocalObjectPath
+    _module_path: ModulePath
+    _objects: dict[str, Object]
+    _value: Any | Missing
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             try:
-                candidate = self._cls.get_attribute(name)
+                candidate = self._cls._get_attribute(  # noqa: SLF001
+                    name,
+                    strict=strict,
+                    visited_object_paths=visited_object_paths,
+                )
             except KeyError:
                 pass
             else:
@@ -325,41 +354,13 @@ class Instance:
                         self._module_path, candidate.local_path, value=MISSING
                     )
                 return candidate
+            if strict:
+                raise
             assert name not in self._objects
             self._objects[name] = result = UnknownObject(
                 self.module_path, self.local_path.join(name), value=MISSING
             )
             return result
-
-    def set_attribute(self, name: str, object_: Object, /) -> None:
-        assert isinstance(name, str), (name, object_)
-        assert isinstance(object_, Object), (name, object_)
-        self._objects[name] = object_
-
-    def set_nested_attribute(
-        self, local_path: LocalObjectPath, object_: Object, /
-    ) -> None:
-        assert isinstance(local_path, LocalObjectPath), local_path
-        assert isinstance(object_, Object), object_
-        self.get_mutable_nested_attribute(local_path.parent).set_attribute(
-            local_path.components[-1], object_
-        )
-
-    def strict_get_attribute(self, name: str, /) -> Object:
-        try:
-            return self._objects[name]
-        except KeyError:
-            try:
-                return self._cls.strict_get_attribute(name)
-            except KeyError:
-                pass
-            raise
-
-    _cls: Class | UnknownObject
-    _local_path: LocalObjectPath
-    _module_path: ModulePath
-    _objects: dict[str, Object]
-    _value: Any | Missing
 
     __slots__ = '_cls', '_local_path', '_module_path', '_objects', '_value'
 
@@ -439,15 +440,10 @@ class Call:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_attribute(self, name: str, /) -> Object:
-        try:
-            return self._objects[name]
-        except KeyError:
-            assert name not in self._objects
-            self._objects[name] = result = UnknownObject(
-                self.module_path, self.local_path.join(name), value=MISSING
-            )
-            return result
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -472,6 +468,26 @@ class Call:
     _callable: Object
     _objects: dict[str, Object]
     _positional_arguments: Sequence[tuple[bool, Object]]
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
+        try:
+            return self._objects[name]
+        except KeyError:
+            if strict:
+                raise
+            assert name not in self._objects
+            self._objects[name] = result = UnknownObject(
+                self.module_path, self.local_path.join(name), value=MISSING
+            )
+            visited_object_paths.add(_object_to_path(self))
+            return result
 
     __slots__ = (
         '_callable',
@@ -529,6 +545,8 @@ class Call:
 
 
 class Method:
+    CLS: ClassVar[Class]
+
     @property
     def instance(self, /) -> Object:
         return self._instance
@@ -555,8 +573,10 @@ class Method:
     def value(self, /) -> Any:
         raise NameError(self.local_path.components[-1])
 
-    def get_attribute(self, name: str, /) -> Object:
-        return self.strict_get_attribute(name)
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -575,12 +595,27 @@ class Method:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def strict_get_attribute(self, name: str, /) -> Object:
+    _instance: Object
+    _objects: dict[str, Object]
+    _routine: CallableObject
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             try:
-                candidate = self.CLS.get_attribute(name)
+                candidate = self.CLS._get_attribute(  # noqa: SLF001
+                    name,
+                    strict=strict,
+                    visited_object_paths=visited_object_paths,
+                )
             except KeyError:
                 pass
             else:
@@ -588,12 +623,6 @@ class Method:
                     candidate = type(self)(candidate, self)
                 return candidate
             raise
-
-    CLS: ClassVar[Class]
-
-    _instance: Object
-    _objects: dict[str, Object]
-    _routine: CallableObject
 
     __slots__ = '_instance', '_objects', '_routine'
 
@@ -663,8 +692,10 @@ class Routine:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_attribute(self, name: str, /) -> Object:
-        return self.strict_get_attribute(name)
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -680,12 +711,29 @@ class Routine:
             local_path.components[-1], object_
         )
 
-    def strict_get_attribute(self, name: str, /) -> Object:
+    _ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None
+    _cls: Class | UnknownObject
+    _module_path: ModulePath
+    _local_path: LocalObjectPath
+    _objects: dict[str, Object]
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
         try:
             return self._objects[name]
         except KeyError:
             try:
-                candidate = self._cls.get_attribute(name)
+                candidate = self._cls._get_attribute(  # noqa: SLF001
+                    name,
+                    strict=strict,
+                    visited_object_paths=visited_object_paths,
+                )
             except KeyError:
                 pass
             else:
@@ -693,12 +741,6 @@ class Routine:
                     candidate = Method(candidate, self)
                 return candidate
             raise
-
-    _ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None
-    _cls: Class | UnknownObject
-    _module_path: ModulePath
-    _local_path: LocalObjectPath
-    _objects: dict[str, Object]
 
     __slots__ = (
         '_ast_node',
@@ -790,7 +832,9 @@ class Descriptor:
         raise NameError(self._local_path.components[-1])
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
-        return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
+        return ensure_type(
+            self.get_attribute(name, strict=False), MUTABLE_OBJECT_CLASSES
+        )
 
     def get_mutable_nested_attribute(
         self, local_path: LocalObjectPath, /
@@ -806,19 +850,30 @@ class Descriptor:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_attribute(self, name: str, /) -> Object:
-        return self.strict_get_attribute(name)
-
-    def strict_get_attribute(self, name: str, /) -> Object:
-        candidate = self._cls.get_attribute(name)
-        if candidate.kind is ObjectKind.ROUTINE:
-            candidate = Method(candidate, self)
-        return candidate
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     _ast_node: AnyFunctionDefinitionAstNode | None
     _cls: Class | UnknownObject
     _local_path: LocalObjectPath
     _module_path: ModulePath
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
+        candidate = self._cls._get_attribute(  # noqa: SLF001
+            name, strict=strict, visited_object_paths=visited_object_paths
+        )
+        if candidate.kind is ObjectKind.ROUTINE:
+            candidate = Method(candidate, self)
+        return candidate
 
     __slots__ = '_ast_node', '_cls', '_local_path', '_module_path'
 
@@ -894,43 +949,10 @@ class Module:
     def value(self, /) -> Any:
         raise NameError(self.local_path.components[-1])
 
-    def get_attribute(self, name: str, /) -> Object:
-        if name == CLASS_FIELD_NAME:
-            return self.CLS
-        assert isinstance(name, str), name
-        try:
-            return self._scope.get_object(name)
-        except KeyError:
-            try:
-                cls = self.CLS
-            except AttributeError:
-                pass
-            else:
-                try:
-                    candidate = cls.get_attribute(name)
-                except KeyError:
-                    pass
-                else:
-                    if candidate.kind is ObjectKind.DESCRIPTOR:
-                        return UnknownObject(
-                            self.module_path,
-                            candidate.local_path,
-                            value=MISSING,
-                        )
-                    if candidate.kind is ObjectKind.ROUTINE:
-                        return Method(candidate, self)
-                    return candidate
-            if self.kind in (
-                ObjectKind.BUILTIN_MODULE,
-                ObjectKind.DYNAMIC_MODULE,
-                ObjectKind.EXTENSION_MODULE,
-            ):
-                result = UnknownObject(
-                    self.module_path, self.local_path.join(name), value=MISSING
-                )
-                self._scope.set_object(name, result)
-                return result
-            raise
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def get_mutable_attribute(self, name: str, /) -> MutableObject:
         return ensure_type(self.get_attribute(name), MUTABLE_OBJECT_CLASSES)
@@ -957,10 +979,58 @@ class Module:
     ) -> None:
         self._scope.set_nested_object(local_path, object_)
 
-    def strict_get_attribute(self, name: str, /) -> Object:
-        return self._scope.strict_get_object(name)
-
     _scope: Scope
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
+        if name == CLASS_FIELD_NAME:
+            return self.CLS
+        assert isinstance(name, str), name
+        try:
+            return self._scope._get_object(  # noqa: SLF001
+                name, strict=strict, visited_object_paths=visited_object_paths
+            )
+        except KeyError:
+            try:
+                cls = self.CLS
+            except AttributeError:
+                pass
+            else:
+                try:
+                    candidate = cls._get_attribute(
+                        name,
+                        strict=strict,
+                        visited_object_paths=visited_object_paths,
+                    )
+                except KeyError:
+                    pass
+                else:
+                    if candidate.kind is ObjectKind.DESCRIPTOR:
+                        return UnknownObject(
+                            self.module_path,
+                            candidate.local_path,
+                            value=MISSING,
+                        )
+                    if candidate.kind is ObjectKind.ROUTINE:
+                        return Method(candidate, self)
+                    return candidate
+            if not strict and self.kind in (
+                ObjectKind.BUILTIN_MODULE,
+                ObjectKind.DYNAMIC_MODULE,
+                ObjectKind.EXTENSION_MODULE,
+            ):
+                result = UnknownObject(
+                    self.module_path, self.local_path.join(name), value=MISSING
+                )
+                self._scope.set_object(name, result)
+                return result
+            raise
 
     __slots__ = ('_scope',)
 
@@ -1014,15 +1084,10 @@ class UnknownObject:
             object_get_attribute, local_path.components, initial_object
         )
 
-    def get_attribute(self, name: str, /) -> Object:
-        try:
-            return self._objects[name]
-        except KeyError:
-            assert name not in self._objects
-            self._objects[name] = result = type(self)(
-                self.module_path, self.local_path.join(name), value=MISSING
-            )
-            return result
+    def get_attribute(self, name: str, /, *, strict: bool = False) -> Object:
+        return self._get_attribute(
+            name, strict=strict, visited_object_paths=set()
+        )
 
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
@@ -1045,6 +1110,26 @@ class UnknownObject:
     _local_path: LocalObjectPath
     _objects: dict[str, Object]
     _value: Any | Missing
+
+    def _get_attribute(
+        self,
+        name: str,
+        /,
+        *,
+        strict: bool,
+        visited_object_paths: set[ObjectPath],
+    ) -> Object:
+        try:
+            return self._objects[name]
+        except KeyError:
+            if strict:
+                raise
+            assert name not in self._objects
+            self._objects[name] = result = type(self)(
+                self.module_path, self.local_path.join(name), value=MISSING
+            )
+            visited_object_paths.add(_object_to_path(self))
+            return result
 
     __slots__ = '_local_path', '_module_path', '_objects', '_value'
 
@@ -1130,6 +1215,12 @@ CLASS_SCOPE_KINDS: Final = (
 )
 
 
+def is_subclass(test_cls: Class, target_cls: Class, /) -> bool:
+    return any(
+        parent_cls is target_cls for parent_cls in _cls_to_mro(test_cls)
+    )
+
+
 def object_get_attribute(object_: Object, name: str, /) -> Object:
     return object_.get_attribute(name)
 
@@ -1138,7 +1229,7 @@ def to_object_value(object_: Object, /) -> Any:
     return object_.value
 
 
-def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
+def _cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
     if not isinstance(cls, Class):
         raise TypeError(cls)
     result = [cls]
@@ -1147,32 +1238,63 @@ def cls_to_mro(cls: ClassObject, /) -> Sequence[Class]:
         and cls.local_path == BUILTINS_OBJECT_LOCAL_OBJECT_PATH
     ):
         return result
-    parent_chains: list[Sequence[Any]] = [
-        cls_to_mro(base_cls) for base_cls in cls.bases
-    ]
-    parent_chains.append([*cls.bases])
-    while parent_chains:
-        next_parent = None
-        for parent_chain in parent_chains:
-            candidate = parent_chain[0]
-            if not any(candidate in chain[1:] for chain in parent_chains):
-                next_parent = candidate
-                break
-        if next_parent is None:
-            raise TypeError('MRO resolution error.')
-        if next_parent.kind is not ObjectKind.CLASS:
-            raise TypeError(next_parent.kind)
-        result.append(next_parent)
-        parent_chains = [
-            new_chain
-            for chain in parent_chains
-            if len(
-                new_chain := (chain[1:] if chain[0] is next_parent else chain)
-            )
-            > 0
-        ]
+    result.extend(_iter_rest_mro_entries(cls.bases))
     return result
 
 
-def is_subclass(test_cls: Class, target_cls: Class, /) -> bool:
-    return any(parent_cls is target_cls for parent_cls in cls_to_mro(test_cls))
+def _is_class_sequence(
+    bases: Sequence[ClassObject | Missing], /
+) -> TypeGuard[Sequence[Class]]:
+    return all(
+        base is not MISSING and base.kind in CLASS_OBJECT_KINDS
+        for base in bases
+    )
+
+
+def _iter_rest_mro_entries(bases: Sequence[ClassObject], /) -> Iterable[Class]:
+    if len(bases) == 0:
+        return
+    parent_chains: list[Sequence[ClassObject]] = [
+        _cls_to_mro(base_cls) for base_cls in bases
+    ]
+    parent_chains.append(bases)
+    while parent_chains:
+        next_parent = None
+        for candidate_chain in parent_chains:
+            candidate = candidate_chain[0]
+            if all(
+                candidate not in parent_chain[1:]
+                for parent_chain in parent_chains
+                if parent_chain is not candidate_chain
+            ):
+                next_parent = candidate
+                break
+        if next_parent is None:
+            base_paths = (_object_to_path(base) for base in bases)
+            raise RuntimeError(
+                f'MRO resolution error for {", ".join(map(repr, base_paths))}.'
+            )
+        if not isinstance(next_parent, Class):
+            raise TypeError(next_parent)
+        yield next_parent
+        parent_chains = [
+            new_chain
+            for chain in parent_chains
+            if (
+                len(
+                    new_chain := (
+                        chain[1:] if chain[0] is next_parent else chain
+                    )
+                )
+                > 0
+            )
+        ]
+
+
+def _object_to_path(object_: Object, /) -> ObjectPath:
+    return object_.module_path, object_.local_path
+
+
+def _validate_mro(bases: Sequence[ClassObject], /) -> None:
+    with contextlib.suppress(TypeError):
+        deque(_iter_rest_mro_entries(bases), maxlen=0)
