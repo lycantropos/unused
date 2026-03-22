@@ -10,7 +10,6 @@ from typing_extensions import Self
 
 from unused._core.context import Context
 
-from .attribute_mapping import AttributeMapping
 from .enums import ObjectKind
 from .missing import MISSING, Missing
 from .object_path import (
@@ -104,9 +103,6 @@ def combine_resolved_assignment_target_with_value(
 ) -> Iterable[tuple[ResolvedAssignmentTargetSplitPath | None, Any]]:
     if target is None or isinstance(target, ResolvedAssignmentTargetSplitPath):
         yield target, value
-        return
-    if isinstance(value, AttributeMapping):
-        # e.g.: a case of `enum.Enum` class unpacking
         return
     try:
         iter(value)
