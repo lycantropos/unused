@@ -766,8 +766,8 @@ class Routine:
         *,
         ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None,
         cls: Class | UnknownObject,
-        keyword_only_defaults: Mapping[Any, Any],
-        positional_defaults: Sequence[Any],
+        keyword_only_defaults: Mapping[Any, Any] | Missing,
+        positional_defaults: Sequence[Any] | Missing,
     ) -> None:
         (
             self._ast_node,
@@ -938,7 +938,8 @@ class Module:
     def local_path(self, /) -> LocalObjectPath:
         return self._scope.local_path
 
-    def to_scope(self, /) -> Scope:
+    @property
+    def scope(self) -> Scope:
         return self._scope
 
     @property

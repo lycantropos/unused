@@ -14,17 +14,13 @@ from typing import Any, Final
 
 from typing_extensions import override
 
-from .construction import construct_object_from_expression_node
-from .context import Context, FunctionCallContext, NullContext
-from .enums import ObjectKind, ScopeKind
-from .evaluation import (
-    EVALUATION_EXCEPTIONS,
-    evaluate_expression_node,
-    function_node_to_keyword_only_defaults,
-    function_node_to_positional_defaults,
+from .context import (
+    Context,
+    FunctionCallContext,
+    StaticContext,
     value_to_object,
 )
-from .lookup import lookup_object_by_expression_node
+from .enums import ObjectKind, ScopeKind
 from .missing import MISSING, Missing
 from .modules import BUILTINS_MODULE, BUILTINS_OBJECT, MODULES, TYPES_MODULE
 from .object_ import (
@@ -64,7 +60,11 @@ from .resolution import (
     resolve_assignment_target,
 )
 from .scope import Scope
-from .utils import AnyFunctionDefinitionAstNode, ensure_type
+from .utils import (
+    AnyFunctionDefinitionAstNode,
+    EVALUATION_EXCEPTIONS,
+    ensure_type,
+)
 
 MODULE_FIELD_NAME: Final = '__module__'
 NAME_FIELD_NAME: Final = '__name__'
@@ -252,9 +252,12 @@ def _does_function_modify_caller_global_state(
             )
         function_body_parser = ScopeParser(
             function_scope,
-            BUILTINS_MODULE.to_scope(),
             *function_call_scopes,
-            context=FunctionCallContext(caller_module_scope.module_path),
+            context=FunctionCallContext(
+                function_scope,
+                *function_call_scopes,
+                caller_module_path=caller_module_scope.module_path,
+            ),
             module_file_paths=module_file_paths,
         )
         cache[cache_key] = result = False
@@ -384,7 +387,7 @@ class ScopeParser(ast.NodeVisitor):
         ) and (
             module_scope := ensure_type(
                 MODULES[callable_object.module_path], Module
-            ).to_scope()
+            ).scope
         ).kind is ScopeKind.STATIC_MODULE:
             module_scope.mark_module_as_dynamic()
             return
@@ -399,9 +402,8 @@ class ScopeParser(ast.NodeVisitor):
                         if (
                             function_object.module_path
                             == self._scope.module_path
-                            and (
-                                function_object.local_path.parent
-                                == self._scope.local_path
+                            and function_object.local_path.starts_with(
+                                self._scope.local_path
                             )
                         )
                         else (
@@ -410,8 +412,8 @@ class ScopeParser(ast.NodeVisitor):
                                     function_object.module_path
                                 ),
                                 Module,
-                            ).to_scope(),
-                            BUILTINS_MODULE.to_scope(),
+                            ).scope,
+                            BUILTINS_MODULE.scope,
                         )
                     ),
                     caller_module_scope=self._get_module_scope(),
@@ -478,7 +480,7 @@ class ScopeParser(ast.NodeVisitor):
         cls_parser = ScopeParser(
             cls_scope,
             *self._get_inherited_scopes(),
-            context=self._context,
+            context=StaticContext(cls_scope, *self._get_inherited_scopes()),
             module_file_paths=self._module_file_paths,
         )
         for body_node in node.body:
@@ -486,14 +488,22 @@ class ScopeParser(ast.NodeVisitor):
         metacls: Class | Missing = MISSING
         for keyword in node.keywords:
             if keyword.arg == 'metaclass':
-                candidate_metacls = ensure_type(
+                try:
+                    candidate_metacls = ensure_type(
+                        self._construct_object_from_expression_node(
+                            keyword.value,
+                            local_path=cls_local_path.join('__class__'),
+                            module_path=cls_module_path,
+                        ),
+                        Class,
+                    )
+                except AssertionError:
                     self._construct_object_from_expression_node(
                         keyword.value,
                         local_path=cls_local_path.join('__class__'),
                         module_path=cls_module_path,
-                    ),
-                    Class,
-                )
+                    )
+                    raise
                 if candidate_metacls is None:
                     continue
                 assert candidate_metacls.kind in (
@@ -576,7 +586,8 @@ class ScopeParser(ast.NodeVisitor):
             decorator_object = self._lookup_object_by_expression_node(
                 decorator_node
             )
-            assert decorator_object is not None
+            if decorator_object is None:
+                continue
             if decorator_object.kind in (
                 ObjectKind.METHOD,
                 ObjectKind.ROUTINE,
@@ -591,9 +602,8 @@ class ScopeParser(ast.NodeVisitor):
                             if (
                                 function_object.module_path
                                 == self._scope.module_path
-                                and (
-                                    function_object.local_path.parent
-                                    == self._scope.local_path
+                                and function_object.local_path.starts_with(
+                                    self._scope.local_path
                                 )
                             )
                             else (
@@ -602,8 +612,8 @@ class ScopeParser(ast.NodeVisitor):
                                         function_object.module_path
                                     ),
                                     Module,
-                                ).to_scope(),
-                                BUILTINS_MODULE.to_scope(),
+                                ).scope,
+                                BUILTINS_MODULE.scope,
                             )
                         ),
                         caller_module_scope=self._get_module_scope(),
@@ -641,22 +651,23 @@ class ScopeParser(ast.NodeVisitor):
     @override
     def visit_For(self, node: ast.For) -> None:
         resolved_target = self._resolve_assignment_target(node.target)
+        for target_object_split_path in flatten_resolved_assignment_target(
+            resolved_target
+        ):
+            self._set_target_object_split_path(
+                target_object_split_path,
+                UnknownObject(
+                    self._scope.module_path,
+                    target_object_split_path.combine_local(),
+                    value=MISSING,
+                ),
+            )
+        self.generic_visit(node)
         assert resolved_target is not None
         try:
             iterable = [*self._evaluate_expression_node(node.iter)]
         except EVALUATION_EXCEPTIONS:
-            for target_object_split_path in flatten_resolved_assignment_target(
-                resolved_target
-            ):
-                self._set_target_object_split_path(
-                    target_object_split_path,
-                    UnknownObject(
-                        self._scope.module_path,
-                        target_object_split_path.combine_local(),
-                        value=MISSING,
-                    ),
-                )
-            self.generic_visit(node)
+            pass
         else:
             for element in iterable:
                 for (
@@ -983,13 +994,8 @@ class ScopeParser(ast.NodeVisitor):
         local_path: LocalObjectPath,
         module_path: ModulePath,
     ) -> Object:
-        return construct_object_from_expression_node(
-            node,
-            self._scope,
-            *self._parent_scopes,
-            context=self._context,
-            local_path=local_path,
-            module_path=module_path,
+        return self._context.construct_object_from_expression_node(
+            node, local_path=local_path, module_path=module_path
         )
 
     def _evaluate_keyword_arguments(
@@ -1019,9 +1025,7 @@ class ScopeParser(ast.NodeVisitor):
         return result
 
     def _evaluate_expression_node(self, node: ast.expr, /) -> Any:
-        return evaluate_expression_node(
-            node, self._scope, *self._parent_scopes, context=self._context
-        ).value
+        return self._context.evaluate_expression_node(node).value
 
     def _get_inherited_scopes(self, /) -> Sequence[Scope]:
         result = (
@@ -1052,9 +1056,7 @@ class ScopeParser(ast.NodeVisitor):
     def _lookup_object_by_expression_node(
         self, node: ast.expr, /
     ) -> Object | None:
-        return lookup_object_by_expression_node(
-            node, self._scope, *self._parent_scopes, context=self._context
-        )
+        return self._context.lookup_object_by_expression_node(node)
 
     def _process_assignment(
         self,
@@ -1148,11 +1150,7 @@ class ScopeParser(ast.NodeVisitor):
         self, node: ast.expr, /
     ) -> ResolvedAssignmentTarget:
         return resolve_assignment_target(
-            node,
-            self._scope,
-            *self._parent_scopes,
-            context=self._context,
-            name_scopes=self._name_scopes,
+            node, context=self._context, name_scopes=self._name_scopes
         )
 
     def _resolve_absolute_module_path(
@@ -1200,17 +1198,13 @@ class ScopeParser(ast.NodeVisitor):
         function_object: Object
         function_local_path = self._scope.local_path.join(function_name)
         signature_node = node.args
-        keyword_only_defaults = function_node_to_keyword_only_defaults(
-            signature_node,
-            self._scope,
-            *self._parent_scopes,
-            context=self._context,
+        keyword_only_defaults = (
+            self._context.function_node_to_keyword_only_defaults(
+                signature_node
+            )
         )
-        positional_defaults = function_node_to_positional_defaults(
-            signature_node,
-            self._scope,
-            *self._parent_scopes,
-            context=self._context,
+        positional_defaults = (
+            self._context.function_node_to_positional_defaults(signature_node)
         )
         for decorator_node in node.decorator_list:
             decorator_object = self._lookup_object_by_expression_node(
@@ -1549,8 +1543,8 @@ def _load_module_by_path(
         )
         scope_parser = ScopeParser(
             module_scope,
-            BUILTINS_MODULE.to_scope(),
-            context=NullContext(),
+            BUILTINS_MODULE.scope,
+            context=StaticContext(module_scope, BUILTINS_MODULE.scope),
             module_file_paths=module_file_paths,
         )
         try:

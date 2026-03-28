@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import ast
 import uuid
-from typing import Any, TypeAlias, TypeVar, cast, overload
+from typing import Any, Final, TypeAlias, TypeVar, cast, overload
 
 AnyFunctionDefinitionAstNode: TypeAlias = (
     ast.AsyncFunctionDef | ast.FunctionDef
+)
+
+EVALUATION_EXCEPTIONS: Final = (
+    AttributeError,
+    IndexError,
+    KeyError,
+    NameError,
+    TypeError,
 )
 
 _T = TypeVar('_T')

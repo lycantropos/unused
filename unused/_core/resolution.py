@@ -4,14 +4,13 @@ import ast
 import functools
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import chain, repeat
-from typing import Any, TypeAlias
+from typing import Any, TYPE_CHECKING, TypeAlias
 
 from typing_extensions import Self
 
-from unused._core.context import Context
-
-from .enums import ObjectKind
+from .enums import ObjectKind, ScopeKind
 from .missing import MISSING, Missing
+from .object_ import Module
 from .object_path import (
     DICT_FIELD_NAME,
     LocalObjectPath,
@@ -20,6 +19,10 @@ from .object_path import (
     SYS_MODULE_PATH,
 )
 from .scope import Scope
+from .utils import EVALUATION_EXCEPTIONS, ensure_type
+
+if TYPE_CHECKING:
+    from .context import Context
 
 
 class ResolvedAssignmentTargetSplitPath:
@@ -86,12 +89,14 @@ def checked_combine_resolved_assignment_target_with_value(
         yield target, value
         return
     try:
-        value_iterator = iter(value)
+        value_iterator = (
+            iter(value) if len(value) == len(target) else repeat(MISSING)
+        )
     except TypeError:
         value_iterator = repeat(MISSING)
     yield from chain.from_iterable(
         map(
-            combine_resolved_assignment_target_with_value,
+            checked_combine_resolved_assignment_target_with_value,
             target,
             value_iterator,
         )
@@ -116,9 +121,8 @@ def combine_resolved_assignment_target_with_value(
 @functools.singledispatch
 def resolve_assignment_target(
     _node: ast.expr,
-    _scope: Scope,
     /,
-    *_parent_scopes: Scope,
+    *,
     context: Context,  # noqa: ARG001
     name_scopes: Mapping[str, Scope],  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
@@ -128,19 +132,14 @@ def resolve_assignment_target(
 @resolve_assignment_target.register(ast.Attribute)
 def _(
     node: ast.Attribute,
-    scope: Scope,
     /,
-    *parent_scopes: Scope,
+    *,
     context: Context,
     name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
     if (
         object_path := resolve_assignment_target(
-            node.value,
-            scope,
-            *parent_scopes,
-            context=context,
-            name_scopes=name_scopes,
+            node.value, context=context, name_scopes=name_scopes
         )
     ) is not None:
         assert isinstance(object_path, ResolvedAssignmentTargetSplitPath)
@@ -152,17 +151,18 @@ def _(
 @resolve_assignment_target.register(ast.Tuple)
 def _(
     node: ast.List | ast.Tuple,
-    scope: Scope,
     /,
-    *parent_scopes: Scope,
+    *,
     context: Context,
     name_scopes: Mapping[str, Scope],
 ) -> ResolvedAssignmentTarget:
     return [
         resolve_assignment_target(
-            element_node,
-            scope,
-            *parent_scopes,
+            (
+                element_node.value
+                if isinstance(element_node, ast.Starred)
+                else element_node
+            ),
             context=context,
             name_scopes=name_scopes,
         )
@@ -172,35 +172,28 @@ def _(
 
 @resolve_assignment_target.register(ast.Name)
 def _(
-    node: ast.Name,
-    scope: Scope,
-    /,
-    *parent_scopes: Scope,
-    context: Context,  # noqa: ARG001
-    name_scopes: Mapping[str, Scope],
+    node: ast.Name, /, *, context: Context, name_scopes: Mapping[str, Scope]
 ) -> ResolvedAssignmentTarget:
-    from .lookup import lookup_object_by_name
-
     object_name = node.id
     if isinstance(node.ctx, ast.Load):
-        object_ = lookup_object_by_name(object_name, scope, *parent_scopes)
+        object_ = context.lookup_object_by_name(object_name)
         if (
-            object_.module_path == scope.module_path
-            and object_.local_path.starts_with(scope.local_path)
+            object_.module_path == context.module_path
+            and object_.local_path.starts_with(context.local_path)
         ):
             return ResolvedAssignmentTargetSplitPath(
-                scope.module_path,
-                scope.local_path,
+                context.module_path,
+                context.local_path,
                 LocalObjectPath(
                     *object_.local_path.components[
-                        len(scope.local_path.components) :
+                        len(context.local_path.components) :
                     ]
                 ),
             )
         return ResolvedAssignmentTargetSplitPath(
             object_.module_path, object_.local_path, LocalObjectPath()
         )
-    name_scope = name_scopes.get(object_name, scope)
+    name_scope = name_scopes.get(object_name, context)
     return ResolvedAssignmentTargetSplitPath(
         name_scope.module_path,
         name_scope.local_path,
@@ -211,18 +204,14 @@ def _(
 @resolve_assignment_target.register(ast.Subscript)
 def _(
     node: ast.Subscript,
-    scope: Scope,
     /,
-    *parent_scopes: Scope,
+    *,
     context: Context,
     name_scopes: Mapping[str, Scope],  # noqa: ARG001
 ) -> ResolvedAssignmentTarget:
-    from .evaluation import EVALUATION_EXCEPTIONS, evaluate_expression_node
-    from .lookup import lookup_object_by_expression_node
+    from .modules import MODULES
 
-    value_object = lookup_object_by_expression_node(
-        node.value, scope, *parent_scopes, context=context
-    )
+    value_object = context.lookup_object_by_expression_node(node.value)
     if value_object is None:
         return None
     if (
@@ -231,9 +220,7 @@ def _(
     ):
         assert value_object.kind is ObjectKind.INSTANCE, value_object
         try:
-            module_name = evaluate_expression_node(
-                node.slice, scope, *parent_scopes, context=context
-            ).value
+            module_name = context.evaluate_expression_node(node.slice).value
         except EVALUATION_EXCEPTIONS:
             return None
         else:
@@ -244,19 +231,23 @@ def _(
                 LocalObjectPath(),
             )
     if not (
-        value_object.module_path == scope.module_path
+        value_object.module_path == context.module_path
         and value_object.local_path == LocalObjectPath(DICT_FIELD_NAME)
     ):
         return None
     try:
-        slice_value = evaluate_expression_node(
-            node.slice, scope, *parent_scopes, context=context
-        ).value
+        slice_value = context.evaluate_expression_node(node.slice).value
     except EVALUATION_EXCEPTIONS:
+        if (
+            module_scope := ensure_type(
+                MODULES[context.module_path], Module
+            ).scope
+        ).kind is ScopeKind.STATIC_MODULE:
+            module_scope.mark_module_as_dynamic()
         return None
     assert isinstance(slice_value, str), ast.unparse(node)
     return ResolvedAssignmentTargetSplitPath(
-        scope.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
+        context.module_path, LocalObjectPath(), LocalObjectPath(slice_value)
     )
 
 
