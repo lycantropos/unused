@@ -193,7 +193,7 @@ def _(
         return ResolvedAssignmentTargetSplitPath(
             object_.module_path, object_.local_path, LocalObjectPath()
         )
-    name_scope = name_scopes.get(object_name, context)
+    name_scope: Scope | Context = name_scopes.get(object_name, context)
     return ResolvedAssignmentTargetSplitPath(
         name_scope.module_path,
         name_scope.local_path,

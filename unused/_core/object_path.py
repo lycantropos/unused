@@ -185,6 +185,8 @@ TYPING_MODULE_PATH: Final = ModulePath.from_module_name(typing.__name__)
 assert sys.modules[TYPING_MODULE_PATH.to_module_name()] is typing
 
 DICT_FIELD_NAME: Final = '__dict__'
+DOC_FIELD_NAME: Final = '__doc__'
+FILE_FIELD_NAME: Final = '__file__'
 NAME_FIELD_NAME: Final = '__name__'
 QUALNAME_FIELD_NAME: Final = '__qualname__'
 

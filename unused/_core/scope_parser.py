@@ -38,19 +38,20 @@ from .object_ import (
 )
 from .object_path import (
     BUILTINS_DICT_LOCAL_OBJECT_PATH,
-    BUILTINS_LIST_LOCAL_OBJECT_PATH,
     BUILTINS_MODULE_PATH,
     BUILTINS_STR_LOCAL_OBJECT_PATH,
     BUILTINS_TUPLE_LOCAL_OBJECT_PATH,
     BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     DICT_FIELD_NAME,
+    DOC_FIELD_NAME,
+    FILE_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
     ModulePath,
-    TYPES_CODE_TYPE_LOCAL_OBJECT_PATH,
+    NAME_FIELD_NAME,
+    ObjectPath,
     TYPES_FUNCTION_TYPE_LOCAL_OBJECT_PATH,
-    TYPES_NONE_TYPE_LOCAL_OBJECT_PATH,
 )
 from .resolution import (
     ResolvedAssignmentTarget,
@@ -67,7 +68,8 @@ from .utils import (
 )
 
 MODULE_FIELD_NAME: Final = '__module__'
-NAME_FIELD_NAME: Final = '__name__'
+PACKAGE_FIELD_NAME: Final = '__package__'
+PATH_FIELD_NAME: Final = '__path__'
 QUALNAME_FIELD_NAME: Final = '__qualname__'
 
 TYPES_MODULE_TYPE_LOCAL_OBJECT_PATH: Final[LocalObjectPath] = LocalObjectPath(
@@ -79,7 +81,7 @@ def _does_function_modify_caller_global_state(
     function_object: Routine,
     /,
     *function_call_scopes: Scope,
-    cache: dict[tuple[ModulePath, LocalObjectPath], bool] = {},  # noqa: B006
+    cache: dict[ObjectPath, bool] = {},  # noqa: B006
     caller_module_scope: Scope,
     keyword_arguments: Mapping[str, Any],
     module_file_paths: Mapping[ModulePath, Path | None],
@@ -665,11 +667,11 @@ class ScopeParser(ast.NodeVisitor):
         self.generic_visit(node)
         assert resolved_target is not None
         try:
-            iterable = [*self._evaluate_expression_node(node.iter)]
+            elements = [*self._evaluate_expression_node(node.iter)]
         except EVALUATION_EXCEPTIONS:
             pass
         else:
-            for element in iterable:
+            for element in elements:
                 for (
                     maybe_target_object_split_path,
                     value,
@@ -820,7 +822,7 @@ class ScopeParser(ast.NodeVisitor):
 
     @override
     def visit_If(self, node: ast.If) -> None:
-        self.generic_visit(node.test)
+        self.visit(node.test)
         try:
             condition_satisfied = self._evaluate_expression_node(node.test)
         except EVALUATION_EXCEPTIONS:
@@ -830,8 +832,22 @@ class ScopeParser(ast.NodeVisitor):
                 ):
                     self.visit(body_node)
         else:
-            for body_node in node.body if condition_satisfied else node.orelse:
-                self.visit(body_node)
+            if condition_satisfied:
+                for body_node in node.orelse:
+                    with contextlib.suppress(
+                        ModuleNotFoundError, *EVALUATION_EXCEPTIONS
+                    ):
+                        self.visit(body_node)
+                for body_node in node.body:
+                    self.visit(body_node)
+            else:
+                for body_node in node.body:
+                    with contextlib.suppress(
+                        ModuleNotFoundError, *EVALUATION_EXCEPTIONS
+                    ):
+                        self.visit(body_node)
+                for body_node in node.orelse:
+                    self.visit(body_node)
 
     @override
     def visit_Lambda(self, node: ast.Lambda) -> None:
@@ -871,8 +887,8 @@ class ScopeParser(ast.NodeVisitor):
             for body_node in node.body:
                 self.visit(body_node)
         except Exception as error:
-            for handler in node.handlers:
-                exception_type_node = handler.type
+            for handler_node in node.handlers:
+                exception_type_node = handler_node.type
                 exception_cls_object = (
                     self._lookup_object_by_expression_node(exception_type_node)
                     if exception_type_node is not None
@@ -897,7 +913,7 @@ class ScopeParser(ast.NodeVisitor):
                         for exception_cls in type(error).mro()[:-1]
                     )
                 ):
-                    exception_name = handler.name
+                    exception_name = handler_node.name
                     if exception_name is not None:
                         assert exception_cls_object is not None
                         self._scope.set_object(
@@ -912,16 +928,72 @@ class ScopeParser(ast.NodeVisitor):
                                 value=MISSING,
                             ),
                         )
-                    for handler_node in handler.body:
-                        self.visit(handler_node)
+                    for handler_body_node in handler_node.body:
+                        self.visit(handler_body_node)
                     if exception_name is not None:
-                        self._scope.delete_object(exception_name)
+                        # for nested cases with same exception name:
+                        # try:
+                        #     ...
+                        # except ... as name:
+                        #     try:
+                        #         ...
+                        #     except ... as name:
+                        #         ...
+                        self._delete_object_if_exists(exception_name)
                     break
             else:
                 raise
         else:
+            for handler_node in node.handlers:
+                self.visit(handler_node)
             for else_node in node.orelse:
                 self.visit(else_node)
+
+    @override
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        exception_name = node.name
+        if exception_name is not None:
+            exception_type_node = node.type
+            assert exception_type_node is not None
+            exception_cls_object = self._lookup_object_by_expression_node(
+                exception_type_node
+            )
+            self._scope.set_object(
+                exception_name,
+                (
+                    Instance(
+                        self._scope.module_path,
+                        self._scope.local_path.join(exception_name),
+                        cls=exception_cls_object,
+                        value=MISSING,
+                    )
+                    if isinstance(exception_cls_object, Class | UnknownObject)
+                    else UnknownObject(
+                        self._scope.module_path,
+                        self._scope.local_path.join(exception_name),
+                        value=MISSING,
+                    )
+                ),
+            )
+        self.generic_visit(node)
+        if exception_name is not None:
+            # for nested cases with same exception name:
+            # try:
+            #     ...
+            # except ... as name:
+            #     try:
+            #         ...
+            #     except ... as name:
+            #         ...
+            self._delete_object_if_exists(exception_name)
+
+    def _delete_object_if_exists(self, name: str, /) -> None:
+        try:
+            self._scope.get_object(name, strict=True)
+        except KeyError:
+            pass
+        else:
+            self._scope.delete_object(name)
 
     @override
     def visit_With(self, node: ast.With) -> None:
@@ -1000,12 +1072,12 @@ class ScopeParser(ast.NodeVisitor):
 
     def _evaluate_keyword_arguments(
         self, keyword_argument_nodes: Sequence[ast.keyword], /
-    ) -> Mapping[str, Any]:
-        result: dict[str, Any] = {}
+    ) -> Mapping[str, object | Missing]:
+        result: dict[str, object | Missing] = {}
         for keyword_argument_node in keyword_argument_nodes:
             if keyword_argument_node.arg is None:
                 try:
-                    keyword_argument_values = {
+                    keyword_argument_values: dict[str, object | Missing] = {
                         **self._evaluate_expression_node(
                             keyword_argument_node.value
                         )
@@ -1165,8 +1237,8 @@ class ScopeParser(ast.NodeVisitor):
         positional_argument_nodes: Sequence[ast.expr],
         callable_object: Object,
         /,
-    ) -> Sequence[Any | Missing | Starred]:
-        result: list[Any] = []
+    ) -> Sequence[object | Missing | Starred]:
+        result: list[object | Missing | Starred] = []
         if callable_object.kind is ObjectKind.METHOD:
             result.append(callable_object.instance)
         for positional_argument_node in positional_argument_nodes:
@@ -1331,20 +1403,6 @@ class ScopeParser(ast.NodeVisitor):
                 keyword_only_defaults=keyword_only_defaults,
                 positional_defaults=positional_defaults,
             )
-            function_object.set_attribute(
-                '__code__',
-                Instance(
-                    self._scope.module_path,
-                    function_local_path.join('__code__'),
-                    cls=ensure_type(
-                        TYPES_MODULE.get_nested_attribute(
-                            TYPES_CODE_TYPE_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    ),
-                    value=MISSING,
-                ),
-            )
         if (
             function_name == '__getattr__'
             and self._scope.kind is ScopeKind.STATIC_MODULE
@@ -1423,11 +1481,13 @@ def _load_module_by_path(
         raise ModuleNotFoundError(module_path) from None
     if module_file_path is None:
         MODULES[module_path] = result = Module(
-            Scope(ScopeKind.BUILTIN_MODULE, module_path, LocalObjectPath())
+            Scope(ScopeKind.BUILTIN_MODULE, module_path, LocalObjectPath()),
+            ast_node=None,
         )
     elif module_file_path.name.endswith(tuple(EXTENSION_SUFFIXES)):
         MODULES[module_path] = result = Module(
-            Scope(ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath())
+            Scope(ScopeKind.EXTENSION_MODULE, module_path, LocalObjectPath()),
+            ast_node=None,
         )
     else:
         module_source_text = module_file_path.read_text(encoding='utf-8')
@@ -1436,110 +1496,51 @@ def _load_module_by_path(
         module_scope = Scope(
             ScopeKind.STATIC_MODULE, module_path, LocalObjectPath()
         )
-        result = MODULES[module_path] = Module(module_scope)
-        result.set_attribute(
-            '__file__',
-            Instance(
-                module_path,
-                LocalObjectPath('__file__'),
-                cls=ensure_type(
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_STR_LOCAL_OBJECT_PATH
-                    ),
-                    Class,
-                ),
-                value=str(module_file_path),
+        module_scope.set_object(
+            DOC_FIELD_NAME,
+            value_to_object(
+                ast.get_docstring(module_node),
+                module_path=module_scope.module_path,
+                local_path=module_scope.local_path.join(DOC_FIELD_NAME),
             ),
         )
-        module_docstring = ast.get_docstring(module_node)
-        if module_docstring is not None:
-            assert isinstance(module_docstring, str), module_docstring
-            result.set_attribute(
-                '__doc__',
-                Instance(
-                    module_path,
-                    LocalObjectPath('__doc__'),
-                    cls=ensure_type(
-                        BUILTINS_MODULE.get_nested_attribute(
-                            BUILTINS_STR_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    ),
-                    value=module_docstring,
-                ),
-            )
-        else:
-            result.set_attribute(
-                '__doc__',
-                Instance(
-                    module_path,
-                    LocalObjectPath('__doc__'),
-                    cls=ensure_type(
-                        TYPES_MODULE.get_nested_attribute(
-                            TYPES_NONE_TYPE_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    ),
-                    value=module_docstring,
-                ),
-            )
+        module_scope.set_object(
+            FILE_FIELD_NAME,
+            value_to_object(
+                str(module_file_path),
+                module_path=module_scope.module_path,
+                local_path=module_scope.local_path.join(FILE_FIELD_NAME),
+            ),
+        )
         if module_file_path.name.startswith('__init__.'):
-            result.set_attribute(
-                '__package__',
-                Instance(
-                    module_path,
-                    LocalObjectPath('__package__'),
-                    cls=ensure_type(
-                        BUILTINS_MODULE.get_nested_attribute(
-                            BUILTINS_STR_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
+            module_scope.set_object(
+                PACKAGE_FIELD_NAME,
+                value_to_object(
+                    module_path.to_module_name(),
+                    module_path=module_scope.module_path,
+                    local_path=module_scope.local_path.join(
+                        PACKAGE_FIELD_NAME
                     ),
-                    value=module_path.to_module_name(),
                 ),
             )
-            result.set_attribute(
-                '__path__',
-                Instance(
-                    module_path,
-                    LocalObjectPath('__path__'),
-                    cls=ensure_type(
-                        BUILTINS_MODULE.get_nested_attribute(
-                            BUILTINS_LIST_LOCAL_OBJECT_PATH
-                        ),
-                        Class,
-                    ),
-                    value=[str(module_file_path.parent)],
+            module_scope.set_object(
+                PATH_FIELD_NAME,
+                value_to_object(
+                    [str(module_file_path.parent)],
+                    module_path=module_scope.module_path,
+                    local_path=module_scope.local_path.join(PATH_FIELD_NAME),
                 ),
             )
-        assert isinstance(result, Module), result
-        result.set_attribute(
-            DICT_FIELD_NAME,
-            Instance(
-                result.module_path,
-                result.local_path.join(DICT_FIELD_NAME),
-                cls=ensure_type(
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_DICT_LOCAL_OBJECT_PATH
-                    ),
-                    Class,
-                ),
-                value=MISSING,
+        module_scope.set_object(
+            NAME_FIELD_NAME,
+            value_to_object(
+                module_path.to_module_name(),
+                module_path=module_scope.module_path,
+                local_path=module_scope.local_path.join(NAME_FIELD_NAME),
             ),
         )
-        result.set_attribute(
-            NAME_FIELD_NAME,
-            Instance(
-                result.module_path,
-                result.local_path.join(NAME_FIELD_NAME),
-                cls=ensure_type(
-                    BUILTINS_MODULE.get_nested_attribute(
-                        BUILTINS_STR_LOCAL_OBJECT_PATH
-                    ),
-                    Class,
-                ),
-                value=module_path.to_module_name(),
-            ),
+        result = MODULES[module_path] = Module(
+            module_scope, ast_node=module_node
         )
         scope_parser = ScopeParser(
             module_scope,

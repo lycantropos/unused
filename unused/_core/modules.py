@@ -837,7 +837,8 @@ def _parse_modules(
                         ScopeKind.STATIC_MODULE,
                         value_module_path,
                         value_local_path,
-                    )
+                    ),
+                    ast_node=None,
                 )
                 if len(value_local_path.components) == 0:
                     result[value_module_path] = value_object
@@ -966,23 +967,6 @@ def _parse_modules(
                         cls=value_base_cls,
                         keyword_only_defaults=value.__kwdefaults__ or {},
                         positional_defaults=value.__defaults__ or (),
-                    )
-                    value_object.set_attribute(
-                        '__code__',
-                        Instance(
-                            value_module_path,
-                            value_local_path.join('__code__'),
-                            cls=ensure_type(
-                                _path_to_object(
-                                    result,
-                                    namespace_value_id_origin_paths[
-                                        _namespace_value_id(types.CodeType)
-                                    ],
-                                ),
-                                Class,
-                            ),
-                            value=MISSING,
-                        ),
                     )
                 elif isinstance(
                     value,

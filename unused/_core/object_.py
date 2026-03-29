@@ -14,7 +14,6 @@ from typing import (
     TYPE_CHECKING,
     TypeAlias,
     TypeGuard,
-    TypeVar,
     get_args,
 )
 
@@ -25,6 +24,7 @@ from .object_path import (
     BUILTINS_OBJECT_LOCAL_OBJECT_PATH,
     BUILTINS_TYPE_LOCAL_OBJECT_PATH,
     CLASS_FIELD_NAME,
+    DICT_FIELD_NAME,
     FUNCTION_KEYWORD_ONLY_DEFAULTS_FIELD_NAME,
     FUNCTION_POSITIONAL_DEFAULTS_FIELD_NAME,
     LocalObjectPath,
@@ -35,8 +35,6 @@ from .utils import AnyFunctionDefinitionAstNode, ensure_type
 
 if TYPE_CHECKING:
     from .scope import Scope
-
-_T = TypeVar('_T')
 
 
 class Class:
@@ -95,6 +93,10 @@ class Class:
     @property
     def module_path(self, /) -> ModulePath:
         return self._scope.module_path
+
+    @property
+    def scope(self, /) -> Scope:
+        return self._scope
 
     @property
     def value(self, /) -> Any:
@@ -160,9 +162,9 @@ class Class:
                 )
             except KeyError:
                 pass
-            visited_object_paths.add(_object_to_path(self))
+            visited_object_paths.add(object_to_path(self))
             for base in self._bases:
-                base_path = _object_to_path(base)
+                base_path = object_to_path(base)
                 if base_path in visited_object_paths:
                     continue
                 visited_object_paths.add(base_path)
@@ -175,7 +177,7 @@ class Class:
                 except KeyError:
                     continue
             if (metacls := self._metacls) is not MISSING and (
-                metacls_path := _object_to_path(metacls)
+                metacls_path := object_to_path(metacls)
             ) not in visited_object_paths:
                 visited_object_paths.add(metacls_path)
                 assert self.kind is ObjectKind.CLASS, self
@@ -300,7 +302,7 @@ class Instance:
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
-        self._objects[name] = object_
+        self._attributes[name] = object_
 
     def set_nested_attribute(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -311,10 +313,10 @@ class Instance:
             local_path.components[-1], object_
         )
 
+    _attributes: dict[str, Object]
     _cls: Class | UnknownObject
     _local_path: LocalObjectPath
     _module_path: ModulePath
-    _objects: dict[str, Object]
     _value: Any | Missing
 
     def _get_attribute(
@@ -326,7 +328,7 @@ class Instance:
         visited_object_paths: set[ObjectPath],
     ) -> Object:
         try:
-            return self._objects[name]
+            return self._attributes[name]
         except KeyError:
             try:
                 candidate = self._cls._get_attribute(  # noqa: SLF001
@@ -352,20 +354,26 @@ class Instance:
                 return candidate
             if strict:
                 raise
-            assert name not in self._objects
-            self._objects[name] = result = UnknownObject(
+            assert name not in self._attributes
+            self._attributes[name] = result = UnknownObject(
                 self.module_path, self.local_path.join(name), value=MISSING
             )
             return result
 
-    __slots__ = '_cls', '_local_path', '_module_path', '_objects', '_value'
+    __slots__ = (
+        '_attributes',
+        '_cls',
+        '_local_path',
+        '_module_path',
+        '_value',
+    )
 
     def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
-                and self._objects == other._objects
+                and self._attributes == other._attributes
                 and self._value == other._value
                 and self._cls == other._cls
             )
@@ -383,12 +391,12 @@ class Instance:
         value: Any | Missing,
     ) -> None:
         (
+            self._attributes,
             self._cls,
             self._local_path,
             self._module_path,
-            self._objects,
             self._value,
-        ) = cls, local_path, module_path, {}, value
+        ) = {}, cls, local_path, module_path, value
 
     def __repr__(self, /) -> str:
         return (
@@ -444,7 +452,7 @@ class Call:
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
-        self._objects[name] = object_
+        self._attributes[name] = object_
 
     def set_nested_attribute(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -456,13 +464,13 @@ class Call:
         )
 
     def strict_get_attribute(self, name: str, /) -> Object:
-        return self._objects[name]
+        return self._attributes[name]
 
+    _attributes: dict[str, Object]
+    _callable: Object
     _keyword_arguments: Sequence[tuple[str | None, Object]]
     _local_path: LocalObjectPath
     _module_path: ModulePath
-    _callable: Object
-    _objects: dict[str, Object]
     _positional_arguments: Sequence[tuple[bool, Object]]
 
     def _get_attribute(
@@ -474,23 +482,23 @@ class Call:
         visited_object_paths: set[ObjectPath],
     ) -> Object:
         try:
-            return self._objects[name]
+            return self._attributes[name]
         except KeyError:
             if strict:
                 raise
-            assert name not in self._objects
-            self._objects[name] = result = UnknownObject(
+            assert name not in self._attributes
+            self._attributes[name] = result = UnknownObject(
                 self.module_path, self.local_path.join(name), value=MISSING
             )
-            visited_object_paths.add(_object_to_path(self))
+            visited_object_paths.add(object_to_path(self))
             return result
 
     __slots__ = (
+        '_attributes',
         '_callable',
         '_keyword_arguments',
         '_local_path',
         '_module_path',
-        '_objects',
         '_positional_arguments',
     )
 
@@ -501,7 +509,7 @@ class Call:
                 and self._positional_arguments == other._positional_arguments
                 and self._callable == other._callable
                 and self._keyword_arguments == other._keyword_arguments
-                and self._objects == other._objects
+                and self._attributes == other._attributes
             )
             if isinstance(other, type(self))
             else NotImplemented
@@ -517,25 +525,29 @@ class Call:
         /,
     ) -> None:
         (
+            self._attributes,
+            self._callable,
             self._keyword_arguments,
             self._local_path,
             self._module_path,
-            self._objects,
             self._positional_arguments,
-            self._callable,
         ) = (
+            {},
+            callable_,
             keyword_arguments,
             local_path,
             module_path,
-            {},
             positional_arguments,
-            callable_,
         )
 
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
-            f'{self._module_path!r}, {self._local_path!r}'
+            f'{self._module_path!r}, '
+            f'{self._local_path!r}, '
+            f'{self._callable!r}, '
+            f'{self._positional_arguments!r}, '
+            f'{self._keyword_arguments!r}'
             ')'
         )
 
@@ -696,7 +708,7 @@ class Routine:
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
-        self._objects[name] = object_
+        self._attributes[name] = object_
 
     def set_nested_attribute(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -708,6 +720,7 @@ class Routine:
         )
 
     _ast_node: AnyFunctionDefinitionAstNode | ast.Lambda | None
+    _attributes: dict[str, Object]
     _cls: Class | UnknownObject
     _module_path: ModulePath
     _local_path: LocalObjectPath
@@ -722,7 +735,10 @@ class Routine:
         visited_object_paths: set[ObjectPath],
     ) -> Object:
         try:
-            return self._objects[name]
+            try:
+                return self._attributes[name]
+            except KeyError:
+                return self._objects[name]
         except KeyError:
             try:
                 candidate = self._cls._get_attribute(  # noqa: SLF001
@@ -740,6 +756,7 @@ class Routine:
 
     __slots__ = (
         '_ast_node',
+        '_attributes',
         '_cls',
         '_local_path',
         '_module_path',
@@ -751,6 +768,7 @@ class Routine:
             (
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
+                and self._attributes == other._attributes
                 and self._objects == other._objects
                 and self._cls == other._cls
             )
@@ -770,12 +788,14 @@ class Routine:
         positional_defaults: Sequence[Any] | Missing,
     ) -> None:
         (
+            self._attributes,
             self._ast_node,
             self._cls,
             self._local_path,
             self._module_path,
             self._objects,
         ) = (
+            {},
             ast_node,
             cls,
             local_path,
@@ -912,6 +932,10 @@ class Module:
     CLS: ClassVar[Class]
 
     @property
+    def ast_node(self, /) -> ast.Module | None:
+        return self._ast_node
+
+    @property
     def kind(
         self, /
     ) -> Literal[
@@ -931,15 +955,15 @@ class Module:
         return ObjectKind.STATIC_MODULE
 
     @property
-    def module_path(self, /) -> ModulePath:
-        return self._scope.module_path
-
-    @property
     def local_path(self, /) -> LocalObjectPath:
         return self._scope.local_path
 
     @property
-    def scope(self) -> Scope:
+    def module_path(self, /) -> ModulePath:
+        return self._scope.module_path
+
+    @property
+    def scope(self, /) -> Scope:
         return self._scope
 
     @property
@@ -976,6 +1000,7 @@ class Module:
     ) -> None:
         self._scope.set_nested_object(local_path, object_)
 
+    _ast_node: ast.Module | None
     _scope: Scope
 
     def _get_attribute(
@@ -986,9 +1011,15 @@ class Module:
         strict: bool,
         visited_object_paths: set[ObjectPath],
     ) -> Object:
+        assert isinstance(name, str), name
         if name == CLASS_FIELD_NAME:
             return self.CLS
-        assert isinstance(name, str), name
+        if name == DICT_FIELD_NAME:
+            return UnknownObject(
+                self.module_path,
+                self.local_path.join(DICT_FIELD_NAME),
+                value=MISSING,
+            )
         try:
             return self._scope._get_object(  # noqa: SLF001
                 name, strict=strict, visited_object_paths=visited_object_paths
@@ -1029,7 +1060,7 @@ class Module:
                 return result
             raise
 
-    __slots__ = ('_scope',)
+    __slots__ = '_ast_node', '_scope'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
@@ -1038,8 +1069,10 @@ class Module:
             else NotImplemented
         )
 
-    def __init__(self, scope: Scope, /) -> None:
-        self._scope = scope
+    def __init__(
+        self, scope: Scope, /, *, ast_node: ast.Module | None
+    ) -> None:
+        self._ast_node, self._scope = ast_node, scope
 
     def __repr__(self, /) -> str:
         return f'{type(self).__qualname__}({self._scope!r})'
@@ -1089,7 +1122,7 @@ class UnknownObject:
     def set_attribute(self, name: str, object_: Object, /) -> None:
         assert isinstance(name, str), (name, object_)
         assert isinstance(object_, Object), (name, object_)
-        self._objects[name] = object_
+        self._attributes[name] = object_
 
     def set_nested_attribute(
         self, local_path: LocalObjectPath, object_: Object, /
@@ -1101,11 +1134,11 @@ class UnknownObject:
         )
 
     def strict_get_attribute(self, name: str, /) -> Object:
-        return self._objects[name]
+        return self._attributes[name]
 
+    _attributes: dict[str, Object]
     _module_path: ModulePath
     _local_path: LocalObjectPath
-    _objects: dict[str, Object]
     _value: Any | Missing
 
     def _get_attribute(
@@ -1117,25 +1150,25 @@ class UnknownObject:
         visited_object_paths: set[ObjectPath],
     ) -> Object:
         try:
-            return self._objects[name]
+            return self._attributes[name]
         except KeyError:
             if strict:
                 raise
-            assert name not in self._objects
-            self._objects[name] = result = type(self)(
+            assert name not in self._attributes
+            self._attributes[name] = result = type(self)(
                 self.module_path, self.local_path.join(name), value=MISSING
             )
-            visited_object_paths.add(_object_to_path(self))
+            visited_object_paths.add(object_to_path(self))
             return result
 
-    __slots__ = '_local_path', '_module_path', '_objects', '_value'
+    __slots__ = '_attributes', '_local_path', '_module_path', '_value'
 
     def __eq__(self, other: Any, /) -> Any:
         return (
             (
                 self._module_path == other._module_path
                 and self._local_path == other._local_path
-                and self._objects == other._objects
+                and self._attributes == other._attributes
                 and self._value == other._value
             )
             if isinstance(other, type(self))
@@ -1150,17 +1183,19 @@ class UnknownObject:
         *,
         value: Any | Missing,
     ) -> None:
-        self._local_path, self._module_path, self._objects, self._value = (
+        self._attributes, self._local_path, self._module_path, self._value = (
+            {},
             local_path,
             module_path,
-            {},
             value,
         )
 
     def __repr__(self, /) -> str:
         return (
             f'{type(self).__qualname__}('
-            f'{self._module_path!r}, {self._local_path!r}'
+            f'{self._module_path!r}, '
+            f'{self._local_path!r}, '
+            f'value={self._value!r}'
             ')'
         )
 
@@ -1267,7 +1302,7 @@ def _iter_rest_mro_entries(bases: Sequence[ClassObject], /) -> Iterable[Class]:
                 next_parent = candidate
                 break
         if next_parent is None:
-            base_paths = (_object_to_path(base) for base in bases)
+            base_paths = (object_to_path(base) for base in bases)
             raise RuntimeError(
                 f'MRO resolution error for {", ".join(map(repr, base_paths))}.'
             )
@@ -1288,7 +1323,7 @@ def _iter_rest_mro_entries(bases: Sequence[ClassObject], /) -> Iterable[Class]:
         ]
 
 
-def _object_to_path(object_: Object, /) -> ObjectPath:
+def object_to_path(object_: Object, /) -> ObjectPath:
     return object_.module_path, object_.local_path
 
 

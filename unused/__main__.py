@@ -196,6 +196,7 @@ def main() -> None:
             )
         )
 
+    processed_modules = []
     for module_file_path in chain.from_iterable(
         (
             chain.from_iterable(
@@ -231,7 +232,7 @@ def main() -> None:
             stderr.flush()
             continue
         try:
-            resolve_module_path(
+            module = resolve_module_path(
                 module_path, module_file_paths=module_file_paths
             )
         except ModuleNotFoundError:
@@ -245,9 +246,11 @@ def main() -> None:
             )
             stderr.flush()
             continue
-        stdout.write(str(module_file_path))
-        stdout.write('\n')
-        stdout.flush()
+        else:
+            processed_modules.append(module)
+            stdout.write(str(module_file_path))
+            stdout.write('\n')
+            stdout.flush()
 
 
 def _to_module_file_path_validation_error(value: Path, /) -> Exception | None:

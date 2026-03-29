@@ -105,7 +105,6 @@ class Scope:
             ObjectKind.UNKNOWN_CLASS,
         ), (self, object_)
         assert isinstance(object_, MutableObject), (self, object_)
-        assert object_ not in self._included_objects, (self, object_)
         self._included_objects.append(object_)
 
     def mark_module_as_dynamic(self, /) -> None:

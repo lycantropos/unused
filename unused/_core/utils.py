@@ -14,6 +14,8 @@ EVALUATION_EXCEPTIONS: Final = (
     KeyError,
     NameError,
     TypeError,
+    ValueError,
+    ZeroDivisionError,
 )
 
 _T = TypeVar('_T')
